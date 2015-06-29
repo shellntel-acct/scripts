@@ -103,7 +103,7 @@ for host in allInstances:
 config.close()
 
 print "You're good to go!\n"
-print "Now in another terminal run your proxychains command.  Example  \n$ proxychains nmap -sV -vv -PN whitehouse.gov\n"
+print "Now in another terminal run your proxychains command.  Example  \n$ proxychains nmap -sV -vv -PN scanme.nmap.org\n"
 
 raw_input("Press Enter to terminate all proxy instances and clean up temp rules/keys ")
 
