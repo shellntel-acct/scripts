@@ -1,5 +1,5 @@
 #!/usr/bin/python
-# Author: Hans Lakhan
+# Author: Hans Lakhan # @jarsnah12 (twitter)
 #######################
 # Requirements:
 #	boto:		pip install -U boto
