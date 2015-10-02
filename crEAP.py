@@ -34,6 +34,7 @@ class bcolors:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
+version = "1.1"
 
 # Got root/sudo?
 euid = os.geteuid()
@@ -82,6 +83,7 @@ banner = bcolors.OKGREEN + """
   insecure protocols are in use, crEAP will harvest Radius usernames and handshakes.
   """ + bcolors.ENDC 
 print "\n"+banner
+print "Version: "+bcolors.OKGREEN +version+bcolors.ENDC
 
 
 #Check to see if WLAN is in MONITOR mode, if not, set it
@@ -121,12 +123,6 @@ try:
     subprocess.Popen(['screen -dmS crEAP'], shell=True, stdout=subprocess.PIPE).stdout.read()
     cmd = "stuff $" + "'sudo airodump-ng -c1 "+adapter+"\n'"
     subprocess.Popen(['screen -r crEAP -X ' + cmd], shell=True, stdout=subprocess.PIPE).stdout.read()
-    #subprocess.Popen(["screen -r crEAP -X sudo airodump-ng -c1 "+adapter+"\n"], shell=True, stdout=subprocess.PIPE).stdout.read()
-    #subprocess.Popen(['screen', '-dmS', 'crEAP', '-X', '"''$TERM', '-e', 'bash', '-c', 'sudo', 'airodump-ng', '-c1', adapter, '"'], shell=True, stdout=subprocess.PIPE).stdout.read()
-    #subprocess.Popen("screen -dmS crEAP", shell=True, stdout=subprocess.PIPE).stdout.read()
-
-    #subprocess.Popen("screen -dmS crEAP -X '$TERM -e bash -c sudo airodump-ng -c1 "+adapter+"'\n", shell=True, stdout=subprocess.PIPE).stdout.read()
-#    subprocess.Popen("gnome-terminal -e 'bash -c \"sudo airodump-ng -c1 "+adapter+"\"'", shell=True, stdout=subprocess.PIPE).stdout.read()
 except:
     print "\n" + bcolors.FAIL + "[!]" + bcolors.ENDC + " Unable to set channel hopping and promiscuous mode, exiting.\n" 
 
