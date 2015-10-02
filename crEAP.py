@@ -12,8 +12,8 @@
 #
 #               Airmon-ng, airodump-ng (Aircrack-ng Suite - http://www.aircrack-ng.org/)
 #
-#               Gnome-Terminal for ease of launching airodump (requirement for Promiscuous/Channel hopping
-#               to capture the EAPOL packets)
+#               Screen for terminal managment/ease of launching airodump (requirement for 
+#               Promiscuous/Channel hopping to capture the EAPOL packets)
 
 
 import logging
@@ -53,14 +53,21 @@ except ImportError:
     sys.exit(0)
 
 #Prereq checks:
-requirement = ['airmon-ng', 'airodump-ng']
+requirement = ['airmon-ng', 'airodump-ng', 'screen']
 for r in requirement:
-    try:
-        devnull = open("/dev/null", "w")
-        subprocess.call([r], stdout=devnull)
-    except OSError:
-        print bcolors.FAIL + "\n[-]"+ bcolors.ENDC + r +" dependancy not detected, exiting."
-        sys.exit(0)
+    devnull = open("/dev/null", "w")
+    if r == 'screen':
+        try:
+            subprocess.call([r, "-v"], stdout=devnull)
+        except OSError:
+            print bcolors.FAIL + "\n[-]"+ bcolors.ENDC + r +" dependancy not detected, exiting."
+            sys.exit(0)
+    else:
+        try:
+            subprocess.call([r], stdout=devnull)
+        except OSError:
+            print bcolors.FAIL + "\n[-]"+ bcolors.ENDC + r +" dependancy not detected, exiting."
+            sys.exit(0)
 
 
 banner = bcolors.OKGREEN + """
@@ -93,6 +100,7 @@ bssids.update({'mac':"00:00:00:00:00:00", 'net':'testing'})
 #Interface Foo
 print "\n" + bcolors.WARNING + "[-]" + bcolors.ENDC + " Current Wireless Interfaces\n" + bcolors.ENDC 
 print subprocess.Popen("iwconfig", shell=True, stdout=subprocess.PIPE).stdout.read()
+subprocess.Popen("screen -X -S crEAP kill", shell=True, stdout=subprocess.PIPE).stdout.read()
 
 try:
     adapter = raw_input(bcolors.WARNING + "Specify wireless interface: "+ bcolors.FAIL + "(This will enable MONITOR mode)"+ bcolors.ENDC + " (wlan0, wlan2, etc): ")
@@ -110,7 +118,15 @@ except:
 
 
 try:
-    subprocess.Popen("gnome-terminal -e 'bash -c \"sudo airodump-ng -c1 "+adapter+"\"'", shell=True, stdout=subprocess.PIPE).stdout.read()
+    subprocess.Popen(['screen -dmS crEAP'], shell=True, stdout=subprocess.PIPE).stdout.read()
+    cmd = "stuff $" + "'sudo airodump-ng -c1 "+adapter+"\n'"
+    subprocess.Popen(['screen -r crEAP -X ' + cmd], shell=True, stdout=subprocess.PIPE).stdout.read()
+    #subprocess.Popen(["screen -r crEAP -X sudo airodump-ng -c1 "+adapter+"\n"], shell=True, stdout=subprocess.PIPE).stdout.read()
+    #subprocess.Popen(['screen', '-dmS', 'crEAP', '-X', '"''$TERM', '-e', 'bash', '-c', 'sudo', 'airodump-ng', '-c1', adapter, '"'], shell=True, stdout=subprocess.PIPE).stdout.read()
+    #subprocess.Popen("screen -dmS crEAP", shell=True, stdout=subprocess.PIPE).stdout.read()
+
+    #subprocess.Popen("screen -dmS crEAP -X '$TERM -e bash -c sudo airodump-ng -c1 "+adapter+"'\n", shell=True, stdout=subprocess.PIPE).stdout.read()
+#    subprocess.Popen("gnome-terminal -e 'bash -c \"sudo airodump-ng -c1 "+adapter+"\"'", shell=True, stdout=subprocess.PIPE).stdout.read()
 except:
     print "\n" + bcolors.FAIL + "[!]" + bcolors.ENDC + " Unable to set channel hopping and promiscuous mode, exiting.\n" 
 
@@ -209,6 +225,7 @@ except:
 
 print "\n" + bcolors.FAIL + "\n[!]" + bcolors.ENDC + " User requested interrupt, cleaning up monitor interface and exiting...\n"
 print bcolors.WARNING + "[-]"+ bcolors.ENDC + " Cleaning up interfaces...\n"
+subprocess.Popen("screen -X -S crEAP kill", shell=True, stdout=subprocess.PIPE).stdout.read()
 subprocess.Popen("sudo airmon-ng stop "+adapter, shell=True, stdout=subprocess.PIPE).stdout.read()
 print bcolors.OKGREEN + "[-]"+ bcolors.ENDC + " Unique Harvested Users:" 
 print checked
