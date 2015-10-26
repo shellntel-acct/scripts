@@ -92,6 +92,9 @@ except Exception as e:
 	print "[" + bcolors.FAIL + "!" + bcolors.ENDC + "] Failed to connect to Amazon EC2 because: %s" % e
 	exit()
 
+# Removing old local SSH keys that may have been left behind from a previous use and failed cleanup
+subprocess.Popen("rm -f %s/.ssh/forProxy.pem" % homeDir, shell=True)
+
 # Check to see if SSH KeyPair already exists
 try:
 	kp = conn.get_all_key_pairs(keynames="forProxy")
