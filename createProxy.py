@@ -1,5 +1,5 @@
 #!/usr/bin/python
-# Author: Hans Lakhan # @jarsnah12 (twitter)
+# Author: Hans Lakhan
 #######################
 # Requirements:
 #	boto:		pip install -U boto
@@ -9,7 +9,9 @@
 #	1) Create Debug options
 #	2) Save previous iptables config and restore after finishing
 #	3) Add support for config?
-#	4) Change os.system() to subproccess.Popen to manage STDOUT, STDERR better
+#	4) Change laundry
+#	5) Change os.system() to subproccess.Popen to manage STDOUT, STDERR better
+#	6) Add support for different interfaces, (eth0, eth1, en0, etc)
 #
 #######################
 import boto.ec2
@@ -21,6 +23,7 @@ import subprocess
 import fcntl
 import struct
 import socket
+import hashlib
 from subprocess import Popen, PIPE, STDOUT
 
 class bcolors:
@@ -33,9 +36,16 @@ class bcolors:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
+def error(msg):
+	print "[" + bcolors.FAIL + "!" + bcolors.ENDC + "] " + msg
+def success(msg):
+	print "[" + bcolors.OKGREEN + "*" + bcolors.ENDC + "] " + msg 
+def warning(msg):
+	print "[" + bcolors.WARNING + "~" + bcolors.ENDC + "] " + msg
+
 # Check if running as root
 if os.geteuid() != 0:
-	print "[" + bcolors.FAIL + "!" + bcolors.ENDC + "] You need to have root privileges to run this script."
+	error("You need to have root privileges to run this script.")
 	exit()
 
 # Parse user input
@@ -52,7 +62,7 @@ args = parser.parse_args()
 print "\n++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
 print "+ This script will clear out any existing iptable and routing rules. +"
 print "++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
-print "[" + bcolors.WARNING + "~" + bcolors.ENDC + "] Would you like to continue y/[N]: "
+warning("Would you like to continue y/[N]: ")
 confirm = raw_input()
 if ((confirm != "y") and (confirm != "Y")):
 	exit("Yeah you're right its probably better to play it safe.")
@@ -60,6 +70,14 @@ if ((confirm != "y") and (confirm != "Y")):
 # system variables;
 homeDir = os.getenv("HOME")
 FNULL = open(os.devnull, 'w')
+
+# Generate sshkeyname
+pid = os.getpid()
+stamp = time.time()
+m = hashlib.md5()
+tempstring = str(pid + stamp)
+m.update(tempstring)
+keyName = m.hexdigest() + "_forProxy"
 
 # Get Interface IP
 def get_ip_address(ifname):
@@ -86,42 +104,35 @@ defaultgateway = get_default_gateway_linux()
 
 # Initialize connection to EC2
 try:
-	print "[" + bcolors.OKGREEN + "*" + bcolors.ENDC + "] Connecting to Amazon's EC2..."
+	success("Connecting to Amazon's EC2...")
 	conn = boto.ec2.connect_to_region(region_name=args.region, aws_access_key_id=args.key_id, aws_secret_access_key=args.access_key)
 except Exception as e:
-	print "[" + bcolors.FAIL + "!" + bcolors.ENDC + "] Failed to connect to Amazon EC2 because: %s" % e
+	error("Failed to connect to Amazon EC2 because: %s" % e)
 	exit()
 
-# Removing old local SSH keys that may have been left behind from a previous use and failed cleanup
-subprocess.Popen("rm -f %s/.ssh/forProxy.pem" % homeDir, shell=True)
-
-# Check to see if SSH KeyPair already exists
-try:
-	kp = conn.get_all_key_pairs(keynames="forProxy")
-except:
-	# pair does not exist, creating new key pair
-	print "[" + bcolors.OKGREEN + "*" + bcolors.ENDC + "] Generating ssh keypairs..."
-	keypair = conn.create_key_pair("forProxy")
-	keypair.save("%s/.ssh" % homeDir)
+# Generate KeyPair
+success("Generating ssh keypairs...")
+keypair = conn.create_key_pair(keyName)
+keypair.save("%s/.ssh" % homeDir)
 
 # Check to see if a security group already exists, if not create one
 try:
 	sg = conn.get_all_security_groups(groupnames="forProxy")	
 except:
 	# Security Group does not exist, creating new group
-	print "[" + bcolors.OKGREEN + "*" + bcolors.ENDC + "] Generating Amazon Security Group..."
+	success("Generating Amazon Security Group...")
 	sg = conn.create_security_group(name="forProxy", description="Used for Proxy servers")
 	try:
 		# Adding single ssh rule to allow access
 		sg.authorize(ip_protocol="tcp", from_port=22, to_port=22, cidr_ip="0.0.0.0/0")
 	except Exception as e:
-		print "[" + bcolors.FAIL + "!" + bcolors.ENDC + "] Generating Amazon Security Group failed because: %s" % e
+		error("Generating Amazon Security Group failed because: %s" % e)
 		exit()
 
 
 # Launch Amazon Instances
-reservations = conn.run_instances(args.image_id, key_name="forProxy", min_count=args.num_of_instances, max_count=args.num_of_instances, instance_type=args.image_type, security_groups=['forProxy'])
-print "[" + bcolors.WARNING + "~" + bcolors.ENDC + "] Starting %s instances, please give about 4 minutes for them to fully boot" % args.num_of_instances
+reservations = conn.run_instances(args.image_id, key_name=keyName, min_count=args.num_of_instances, max_count=args.num_of_instances, instance_type=args.image_type, security_groups=['forProxy'])
+warning("Starting %s instances, please give about 4 minutes for them to fully boot" % args.num_of_instances)
 
 #sleep for 4 minutes while booting images
 for i in range(21):
@@ -145,50 +156,53 @@ for reservation in reservations:
 
 interface = 0
 # Create ssh Tunnels for socks proxying
-print "\n[" + bcolors.OKGREEN + "*" + bcolors.ENDC +"] Provisioning Hosts....."
+print "\n"
+success("Provisioning Hosts.....")
 for host in allInstances:
 	# Enable Tunneling on the remote host
-	sshcmd = "ssh -i %s/.ssh/forProxy.pem -o StrictHostKeyChecking=no ubuntu@%s 'echo PermitTunnel yes | sudo tee -a  /etc/ssh/sshd_config'" % (homeDir, host)
+	sshcmd = "ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no ubuntu@%s 'echo PermitTunnel yes | sudo tee -a  /etc/ssh/sshd_config'" % (homeDir, keyName, host)
 	retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
 	if retcode:
-		print "[" + bcolors.FAIL + "!" + bcolors.ENDC + "] ERROR: Failed to modify remote sshd config." 
+		error("ERROR: Failed to modify remote sshd config.")
 	
-	# Resarting Service to take new config (you'd think a simple reload would be enough)
-	sshcmd = "ssh -i %s/.ssh/forProxy.pem -o StrictHostKeyChecking=no ubuntu@%s 'sudo service ssh restart'" % (homeDir, host)
+	# Restarting Service to take new config (you'd think a simple reload would be enough)
+	sshcmd = "ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no ubuntu@%s 'sudo service ssh restart'" % (homeDir, keyName, host)
 	retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
         if retcode:
-                print "[" + bcolors.FAIL + "!" + bcolors.ENDC + "] ERROR: Failed to restart remote sshd service."
+                error("ERROR: Failed to restart remote sshd service.")
+	time.sleep(2)
 	
 	# Establish tunnel interface
-	sshcmd = "ssh -i %s/.ssh/forProxy.pem -w %s:%s -StrictHostKeyChecking=no root@%s &" % (homeDir, interface, interface, host)
+	sshcmd = "ssh -i %s/.ssh/%s.pem -w %s:%s -o StrictHostKeyChecking=no root@%s &" % (homeDir, keyName, interface, interface, host)
 	retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
         if retcode:
-                print "[" + bcolors.FAIL + "!" + bcolors.ENDC + "] ERROR: Failed to establish ssh tunnel on %." % host
-	
+                error("ERROR: Failed to establish ssh tunnel on %." % host)
+	time.sleep(2)	
+
 	# Provision interface
-	sshcmd = "ssh -i %s/.ssh/forProxy.pem -StrictHostKeyChecking=no ubuntu@%s 'sudo ifconfig tun%s 10.%s.254.1 netmask 255.255.255.252'" % (homeDir, host, interface, interface)
+	sshcmd = "ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no ubuntu@%s 'sudo ifconfig tun%s 10.%s.254.1 netmask 255.255.255.252'" % (homeDir, keyName, host, interface, interface)
         retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
         if retcode:
-                print "[" + bcolors.FAIL + "!" + bcolors.ENDC + "] ERROR: Failed to provision remote interface on %s." % host
-	time.sleep(1)
+                error("ERROR: Failed to provision remote interface on %s." % host)
+	time.sleep(2)
 	
 	# Enable forwarding on remote host
-	sshcmd = "ssh -i %s/.ssh/forProxy.pem -StrictHostKeyChecking=no ubuntu@%s 'sudo su root -c \"echo 1 > /proc/sys/net/ipv4/ip_forward\"'" % (homeDir, host)
+	sshcmd = "ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no ubuntu@%s 'sudo su root -c \"echo 1 > /proc/sys/net/ipv4/ip_forward\"'" % (homeDir, keyName, host)
         retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
         if retcode:
-                print "[" + bcolors.FAIL + "!" + bcolors.ENDC + "] ERROR: Failed to enable remote forwarding on %s." % host
+                error("ERROR: Failed to enable remote forwarding on %s." % host)
 	
 	# Provision iptables on remote host
-	sshcmd = "ssh -i %s/.ssh/forProxy.pem -StrictHostKeyChecking=no ubuntu@%s 'sudo iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE'" % (homeDir, host)
+	sshcmd = "ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no ubuntu@%s 'sudo iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE'" % (homeDir, keyName, host)
         retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
         if retcode:
-                print "[" + bcolors.FAIL + "!" + bcolors.ENDC + "] ERROR: Failed to configure remote iptable rules on %s." % host
+                error("ERROR: Failed to configure remote iptable rules on %s." % host)
 	
 	# Add return route back to us
-	sshcmd = "ssh -i %s/.ssh/forProxy.pem -StrictHostKeyChecking=no ubuntu@%s 'sudo route add %s dev tun%s'" % (homeDir, host, localIP, interface)
+	sshcmd = "ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no ubuntu@%s 'sudo route add %s dev tun%s'" % (homeDir, keyName, host, localIP, interface)
         retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
         if retcode:
-                print "[" + bcolors.FAIL + "!" + bcolors.ENDC + "] ERROR: Failed to configure remote routing table on %s." % host
+                error("ERROR: Failed to configure remote routing table on %s." % host)
 	
 	# Turn up our interface
 	os.system("ifconfig tun%s up" % interface)
@@ -233,22 +247,22 @@ os.system("ip route del default")
 # Replace with our own new default route
 os.system("%s" % nexthopcmd)
 
-print "[" + bcolors.OKGREEN + "*" + bcolors.ENDC +"] Done!"
+success("Done!")
 print "\n+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
 print "+ Leave this terminal open and start another to run your commands.  +"
 print "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n"
 print "[" + bcolors.WARNING + "~" + bcolors.ENDC +"] Press " + bcolors.BOLD + "Enter" + bcolors.ENDC + " to terminate the script gracefully.", raw_input()
 
 # Time to clean up
-print "[" + bcolors.OKGREEN + "*" + bcolors.ENDC +"] Shutting down..."
+success("Shutting down...")
 
 # Flush iptables
-print "[" + bcolors.OKGREEN + "*" + bcolors.ENDC +"] Flush iptables...."
+success("Flush iptables....")
 os.system("iptables -t nat -F")
 os.system("iptables -F")
 
 # Cleaning routes
-print "[" + bcolors.OKGREEN + "*" + bcolors.ENDC +"] Correcting Routes....."
+success("Correcting Routes.....")
 interface = args.num_of_instances
 for host in allInstances:
 	os.system("route del %s dev eth0" % host)
@@ -256,32 +270,32 @@ os.system("ip route del default")
 os.system("ip route add default via %s dev eth0" % defaultgateway)
 
 # Terminate instance
-print "[" + bcolors.OKGREEN + "*" + bcolors.ENDC +"] Terminating Instances....."
+success("Terminating Instances.....")
 for reservation in reservations:
 	for instance in reservation.instances:
 		instance.terminate()
 
-print "[" + bcolors.WARNING + "~" + bcolors.ENDC +"] Pausing for 60 seconds so instances can properly terminate....."
-time.sleep(60)
+warning("Pausing for 90 seconds so instances can properly terminate.....")
+time.sleep(90)
 
 # Remove Security Groups
-print "[" + bcolors.OKGREEN + "*" + bcolors.ENDC +"] Deleting Amazon Security Groups....."
+success("Deleting Amazon Security Groups.....")
 try:
 	conn.delete_security_group(name="forProxy")
 except Exception as e:
-	print "[" + bcolors.FAIL + "!" + bcolors.ENC + "Deletion of security group failed because %s" % e
+	error("Deletion of security group failed because %s" % e)
 
 # Remove Key Pairs
-print "[" + bcolors.OKGREEN + "*" + bcolors.ENDC +"] Removing SSH keys....."
+success("Removing SSH keys.....")
 try:
-	conn.delete_key_pair(key_name='forProxy')
+	conn.delete_key_pair(key_name=keyName)
 except Exception as e:
-	print "[" + bcolors.FAIL + "!" + bcolors.ENC + "Deletion of key pair failed because %s" % e
+	error("Deletion of key pair failed because %s" % e)
 
 # Remove local files
-subprocess.Popen("rm -f %s/.ssh/forProxy.pem" % homeDir, shell=True)
+subprocess.Popen("rm -f %s/.ssh/%s.pem" % (homeDir, keyName), shell=True)
 
 # Remove local routing
 os.system("echo 0 > /proc/sys/net/ipv4/ip_forward")
 
-print "[" + bcolors.OKGREEN + "*" + bcolors.ENDC +"] Done!"
+success("Done!")
