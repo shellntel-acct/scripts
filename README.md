@@ -7,7 +7,7 @@ A collection of scripts from the security professionals at www.shellntel.com.
 
 http://www.shellntel.com/blog/2015/9/23/assessing-enterprise-wireless-networks
 
-### proxyCannnon.py
+### proxyCannon.py
 
 http://www.shellntel.com/blog/2015/9/9/update-creating-your-own-private-botnet-for-scanning
 
