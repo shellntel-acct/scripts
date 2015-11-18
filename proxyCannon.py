@@ -77,7 +77,13 @@ stamp = time.time()
 m = hashlib.md5()
 tempstring = str(pid + stamp)
 m.update(tempstring)
-keyName = m.hexdigest() + "_forProxy"
+keyName = "forProxy_" + m.hexdigest()
+
+# Generate securityGroupName
+securityGroup = "forProxy_" + m.hexdigest()
+
+# Generate nameTag
+nameTag = "forProxy_" + m.hexdigest()
 
 # Get Interface IP
 def get_ip_address(ifname):
@@ -116,12 +122,13 @@ keypair = conn.create_key_pair(keyName)
 keypair.save("%s/.ssh" % homeDir)
 
 # Check to see if a security group already exists, if not create one
+# This can prob be cleaned up now with unique securityGroup's
 try:
-	sg = conn.get_all_security_groups(groupnames="forProxy")	
+	sg = conn.get_all_security_groups(groupnames=securityGroup)	
 except:
 	# Security Group does not exist, creating new group
 	success("Generating Amazon Security Group...")
-	sg = conn.create_security_group(name="forProxy", description="Used for Proxy servers")
+	sg = conn.create_security_group(name=securityGroup, description="Used for Proxy servers")
 	try:
 		# Adding single ssh rule to allow access
 		sg.authorize(ip_protocol="tcp", from_port=22, to_port=22, cidr_ip="0.0.0.0/0")
@@ -131,7 +138,7 @@ except:
 
 
 # Launch Amazon Instances
-reservations = conn.run_instances(args.image_id, key_name=keyName, min_count=args.num_of_instances, max_count=args.num_of_instances, instance_type=args.image_type, security_groups=['forProxy'])
+reservations = conn.run_instances(args.image_id, key_name=keyName, min_count=args.num_of_instances, max_count=args.num_of_instances, instance_type=args.image_type, security_groups=[securityGroup])
 warning("Starting %s instances, please give about 4 minutes for them to fully boot" % args.num_of_instances)
 
 #sleep for 4 minutes while booting images
@@ -143,11 +150,11 @@ for i in range(21):
 
 # Add tag name to instance for better management
 for instance in reservations.instances:
-	instance.add_tag("Name", "forProxy")
+	instance.add_tag("Name", nameTag)
 
 # Grab list of public IP's assigned to instances that were launched
 allInstances = []
-reservations = conn.get_all_instances(filters={"tag:Name" : "forProxy", "instance-state-name" : "running"})
+reservations = conn.get_all_instances(filters={"tag:Name" : nameTag, "instance-state-name" : "running"})
 for reservation in reservations:
 	for instance in reservation.instances:
 		if instance.ip_address not in allInstances:
@@ -248,9 +255,9 @@ os.system("ip route del default")
 os.system("%s" % nexthopcmd)
 
 success("Done!")
-print "\n+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
-print "+ Leave this terminal open and start another to run your commands.  +"
-print "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n"
+print "\n++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
+print "+ Leave this terminal open and start another to run your commands.   +"
+print "++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n"
 print "[" + bcolors.WARNING + "~" + bcolors.ENDC +"] Press " + bcolors.BOLD + "Enter" + bcolors.ENDC + " to terminate the script gracefully.", raw_input()
 
 # Time to clean up
@@ -281,7 +288,7 @@ time.sleep(90)
 # Remove Security Groups
 success("Deleting Amazon Security Groups.....")
 try:
-	conn.delete_security_group(name="forProxy")
+	conn.delete_security_group(name=securityGroup)
 except Exception as e:
 	error("Deletion of security group failed because %s" % e)
 
