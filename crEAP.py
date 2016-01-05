@@ -42,7 +42,7 @@ class bcolors:
 	BOLD = '\033[1m'
 	UNDERLINE = '\033[4m'
 
-version = "1.1"
+version = "1.2"
 
 # Got root/sudo?
 euid = os.geteuid()
@@ -197,7 +197,7 @@ def eapol_header(packet):
 				   		EAPID=pkt[EAP].id
  						if pkt[EAP].code == 2:  
 							network = bssids[pkt.addr2]
-							print "\n" + bcolors.OKGREEN + "[!]" + bcolors.ENDC +" EAP-TLS Authentication Detected"
+							# print "\n" + bcolors.OKGREEN + "[!]" + bcolors.ENDC +" EAP-TLS Authentication Detected"
 
 
 		except:
