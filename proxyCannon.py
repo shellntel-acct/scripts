@@ -1,5 +1,5 @@
 #!/usr/bin/python
-# Author: Hans Lakhan
+# Author: Hans Lakhan @jarsnah12
 #######################
 # Requirements:
 #	boto:		pip install -U boto
@@ -16,6 +16,7 @@ import struct
 import socket
 import hashlib
 import signal
+import datetime
 from subprocess import Popen, PIPE, STDOUT
 
 #############################################################################################
@@ -40,7 +41,21 @@ def warning(msg):
 	print "[" + bcolors.WARNING + "~" + bcolors.ENDC + "] " + msg
 def debug(msg):
 	if args.v:
-		print "[i] " + msg
+		timestamp = datetime.datetime.now()
+		print "[i] " + str(timestamp) + " : " + msg
+
+#############################################################################################
+# Handle Logging
+#############################################################################################
+
+def log(msg):
+	
+	timestamp = datetime.datetime.now()
+	logfile = open("/tmp/" + logName, 'a')
+	logfile.write(str(timestamp))
+	logfile.write(" : " + str(msg))
+	logfile.write("\n")
+	logfile.close()
 
 
 #############################################################################################
@@ -72,9 +87,9 @@ def cleanup(signal, frame):
 	# Flush iptables 
 	success("Restoring iptables....")
 	os.system("iptables -t nat -F")
-	debug("iptables cmd: iptables -t -nat -F")
+	debug("SHELL CMD: iptables cmd: iptables -t -nat -F")
 	os.system("iptables -F")
-	debug("iptables cmd: iptables -F")
+	debug("SHELL CMD: iptables cmd: iptables -F")
 	os.system("iptables-restore  < /tmp/%s" % iptablesName)
 
 	# Cleaning routes
@@ -82,11 +97,11 @@ def cleanup(signal, frame):
 	interface = args.num_of_instances
 	for host in allInstances:
         	os.system("route del %s dev %s" % (host, args.interface))
-		debug("route cmd: route del " + host + " dev " + args.interface)
+		debug("SHELL CMD: route del " + host + " dev " + args.interface)
 	os.system("ip route del default")
-	debug("route cmd: ip route del default")
+	debug("SHELL CMD: ip route del default")
 	os.system("ip route add default via %s dev %s" % (defaultgateway, args.interface))
-	debug("route cmd: ip route add default via " + defaultgateway + " dev " + args.interface)
+	debug("SHELL CMD: ip route add default via " + defaultgateway + " dev " + args.interface)
 
 	# Terminate instance
 	success("Terminating Instances.....")
@@ -111,17 +126,22 @@ def cleanup(signal, frame):
 	except Exception as e:
         	error("Deletion of key pair failed because %s" % e)
 
-	# Remove local files
+	# Remove local ssh key
+	debug("SHELL CMD: rm -f " + homeDir + "/.ssh/" + keyName + ".pem")
 	subprocess.Popen("rm -f %s/.ssh/%s.pem" % (homeDir, keyName), shell=True)
-	debug("removing ssh key: rm -f " + homeDir + "/.ssh/" + keyName + ".pem")
 
 	# Remove local routing
+	success("Restoring local routing....")
+	debug("SHELL CMD: echo 0 > /proc/sys/net/ipv4/ip_forward")
 	os.system("echo 0 > /proc/sys/net/ipv4/ip_forward")
-	debug("restoring local routing: echo 0 > /proc/sys/net/ipv4/ip_forward")
 
 	# remove iptables saved config
-	subprocess.Popen("rm /tmp/%" % iptablesName, shell=True)
-	debug("removing iptables save file /tmp/%s" + iptablesName)
+	success("Removing local iptables save state")
+	debug("SHELL CMD: rm -rf  /tmp/%s" + iptablesName)
+	subprocess.Popen("rm /tmp/%s" % iptablesName, shell=True)
+
+	# Log then close
+	log("ProxyCannon Finished.")
 
 	success("Done!")
 	
@@ -134,15 +154,21 @@ def cleanup(signal, frame):
 def rotate_hosts():
 	#connect to EC2 and return list of reservations
         try:
-        	debug("Connecting to Amazon's EC2...")
+        	debug("Connecting to Amazon's EC2.")
                 rotate_conn = boto.ec2.connect_to_region(region_name=args.region, aws_access_key_id=args.key_id, aws_secret_access_key=args.access_key)
         except Exception as e:
                 error("Failed to connect to Amazon EC2 because: %s" % e)
+		cleanup("foo", "bar")
 
 	while True:
 		times_run = 0
-		rotate_reservations = rotate_conn.get_all_instances(filters={"tag:Name" : nameTag, "instance-state-name" : "running"})
-	        success("Rotating.....")
+		try:
+			rotate_reservations = rotate_conn.get_all_instances(filters={"tag:Name" : nameTag, "instance-state-name" : "running"})
+		except Exception as e:
+			error("Failed to connect to Amazon EC2 because: %s (rotate_reservations)" % e)
+                        cleanup("foo", "bar")
+		time.sleep(10)
+		
 		interface = 0
 	        for reservation in rotate_reservations:
         		for instance in reservation.instances:
@@ -153,9 +179,15 @@ def rotate_hosts():
         			try:
                 			ipfilter_conn = boto.ec2.connect_to_region(region_name=args.region, aws_access_key_id=args.key_id, aws_secret_access_key=args.access_key)
         			except Exception as e:
-                			error("Failed to connect to Amazon EC2 because: %s" % e)
+                			error("Failed to connect to Amazon EC2 because: %s (ipfilter_con)" % e)
+					cleanup("foo", "bar")
 
-        			ipfilter_reservations = ipfilter_conn.get_all_instances(filters={"tag:Name" : nameTag, "instance-state-name" : "running"})
+				time.sleep(1)
+        			try:
+					ipfilter_reservations = ipfilter_conn.get_all_instances(filters={"tag:Name" : nameTag, "instance-state-name" : "running"})
+				except Exception as e:
+					error("Failed to get reservations because: %s (ipfilter_reservations)" % e)
+					cleanup("foo", "bar")
 
 			        # Grab list of public IP's assigned to instances that were launched
 			        ipfilter = []
@@ -182,7 +214,7 @@ def rotate_hosts():
 					nexthopcmd = nexthopcmd + "nexthop via 10." + str(route_interface) + ".254.1 dev tun" + str(route_interface) + " weight " + str(weight) + " "
 				        route_interface = route_interface + 1
 	
-				debug("route cmd: " + nexthopcmd)	
+				debug("SHELL CMD: " + nexthopcmd)	
 				os.system("%s" % nexthopcmd)
 	
 				stat = 1
@@ -201,7 +233,7 @@ def rotate_hosts():
 					p2.stdout.close()
 					p3.stdout.close()
 					p4.stdout.close()
-					debug("Connection Stats " + stat)
+					debug("Connection Stats " + stat.strip())
 					if (int(stat) > 0):
 			       	 		debug("Connection is in use, sleeping and trying again in .5 seconds")
 						time.sleep(.5)
@@ -211,25 +243,24 @@ def rotate_hosts():
 				
 				# Killing ssh tun cmd
 				killcmd = "kill $(ps -ef | grep ssh | grep %s | awk '{print $2}')" % host
-				debug("killcmd: " + killcmd)
+				debug("SHELL CMD: " + killcmd)
 				
 				retcode = subprocess.call(killcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
                                 if str(retcode) != "-15":
                                         error("ERROR: Failed to kill ssh tunnel for %s." % host)
 					debug("retcode: " + str(retcode))
 				
-
 				# remove iptables rule allowing SSH to EC2 Host
 				os.system("iptables -t nat -D POSTROUTING -d %s -j RETURN" % host)
-				debug("iptables cmd: iptables -t nat -D POSTROUTING -d " + host + " -j RETURN")			
+				debug("SHELL CMD: iptables -t nat -D POSTROUTING -d " + host + " -j RETURN")			
 		
 				# Nat outbound traffic going through our tunnels
 			        os.system("iptables -t nat -D POSTROUTING -o tun%s -j MASQUERADE" % interface)
-				debug("iptables -t nat -D POSTROUTING -o tun" + str(interface) + " -j MASQUERADE")
+				debug("SHELL CMD: iptables -t nat -D POSTROUTING -o tun" + str(interface) + " -j MASQUERADE")
 	
 				# Remove Static Route to EC2 Host
 				os.system("ip route del %s" % host)
-				debug("ip route del " + host)
+				debug("SHELL CMD: ip route del " + host)
 	
 				# Remove from route table		
        	                	# Build New Route table with $times_run being set to weight 256
@@ -246,7 +277,7 @@ def rotate_hosts():
        	                         		nexthopcmd = nexthopcmd + "nexthop via 10." + str(route_interface) + ".254.1 dev tun" + str(route_interface) + " weight " + str(weight) + " "
                                		route_interface = route_interface + 1
 
-	                        debug("DEBUG: " + nexthopcmd)
+	                        debug("SHELL CMD: " + nexthopcmd)
        	                 	os.system("%s" % nexthopcmd)
 
 				# Requesting new IP allocation
@@ -255,8 +286,9 @@ def rotate_hosts():
 				except Exception as e:
 					error("Failed to obtain a new address because: " + str(e))
 					cleanup("foo", "bar")
-				debug("tmp eip address: " + new_address.public_ip)
-				
+				debug("Temporary Elastic IP address: " + new_address.public_ip)
+			
+				time.sleep(5)
 				# Associating new address
 				rotate_conn.associate_address(instance.id, new_address.public_ip)
 
@@ -265,11 +297,10 @@ def rotate_hosts():
 				time.sleep(30)
 
 				# Remove assocation forcing a new public ip
-				#rotate_conn.disassociate_address(new_address.public_ip, new_address.association_id)
 				try:
 					rotate_conn.disassociate_address(new_address.public_ip)
 				except Exception as e:
-					error("Failed to release the address " + str(host) + " because: " + str(e))
+					error("Failed to dissassociate the address " + str(new_address.public_ip) + " because: " + str(e))
 					cleanup("foo", "bar")
 				debug("Sleeping for 60s to allow for new IP to take effect")
 				time.sleep(60)
@@ -278,7 +309,7 @@ def rotate_hosts():
 				try:
 					rotate_conn.release_address(allocation_id=new_address.allocation_id)
 				except Exception as e:
-					error("Failed to release the address " + str(host) + " because: " + str(e))
+					error("Failed to release the address " + str(new_address.public_ip) + " because: " + str(e))
 					cleanup("foo", "bar")
 
 				# Connect to EC2 and return list of reservations
@@ -305,38 +336,64 @@ def rotate_hosts():
 	
 				# Add static routes for our SSH tunnels
 	       	                os.system("ip route add %s via %s dev %s" % (swapped_ip, defaultgateway, args.interface))
-				debug("route cmd: ip route add " + swapped_ip + " via " + defaultgateway + " dev " + args.interface)
+				debug("SHELL CMD: ip route add " + swapped_ip + " via " + defaultgateway + " dev " + args.interface)
 	
 	 	      		# Establish tunnel interface
        	 			sshcmd = "ssh -i %s/.ssh/%s.pem -w %s:%s -o StrictHostKeyChecking=no -o TCPKeepAlive=yes -o ServerAliveInterval=50 root@%s &" % (homeDir, keyName, interface, interface, swapped_ip)
-       	 			debug("SSH CMD: " + sshcmd)
-				retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
-        			if retcode:
-                			error("ERROR: Failed to establish ssh tunnel on %." % swapped_ip)
-        			time.sleep(2)
+       	 			debug("SHELL CMD: " + sshcmd)
+				retry_cnt = 0
+                                while ((retcode == 1) or (retry_cnt < 6)):
+                                        retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
+                                        if retcode:
+                                                error("ERROR: Failed to configure sshd_config on %s (tun%s). Retrying." % (swapped_ip,interface))
+                                                retry_cnt = retry_cnt + 1
+						time.sleep(1+int(retry_cnt))
+                                        else:
+                                                retry_cnt = 6 # probably a better way to do this
+                                        if retry_cnt == 5:
+                                                error("Giving up...")
+						cleanup("foo", "bar")
 	
 		        	# Provision interface
        		 		sshcmd = "ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no ubuntu@%s 'sudo ifconfig tun%s 10.%s.254.1 netmask 255.255.255.252'" % (homeDir, keyName, swapped_ip, interface, interface)
-        			debug("SSH CMD: " + sshcmd)
-				retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
-        			if retcode:
-               		 		error("ERROR: Failed to provision remote interface on %s." % swapped_ip)
-        			time.sleep(2)
+        			debug("SHELL CMD: " + sshcmd)
+				retry_cnt = 0
+				while ((retcode == 1) or (retry_cnt < 6)):
+					retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
+					if retcode:
+               		 			error("ERROR: Failed to assign interface address on %s (tun%s). Retrying." % (swapped_ip,interface))
+						retry_cnt = retry_cnt + 1
+						time.sleep(1+int(retry_cnt))
+					else:
+						retry_cnt = 6 # probably a better way to do this
+					if retry_cnt == 5:
+						error("Giving up...")
+						cleanup("foo", "bar")
 
 			        ## Add return route back to us
 			        sshcmd = "ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no ubuntu@%s 'sudo route add 10.%s.254.2 dev tun%s'" % (homeDir, keyName, swapped_ip, interface, interface)
-			        debug("SSH CMD: " + sshcmd)
-				retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
-			        if retcode:
-			                error("ERROR: Failed to configure remote routing table on %s." % swapped_ip)
-			
+			        debug("SHELL CMD: " + sshcmd)
+				retry_cnt = 0
+                                while ((retcode == 1) or (retry_cnt < 6)):
+                                        retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
+                                        if retcode:
+                                                error("ERROR: Failed to add static route on %s (tun%s). Retrying." % (swapped_ip,interface))
+                                                retry_cnt = retry_cnt + 1
+                                                time.sleep(1+int(retry_cnt))
+                                        else:
+                                                retry_cnt = 6 # probably a better way to do this
+                                        if retry_cnt == 5:
+                                                error("Giving up...")
+						cleanup("foo", "bar")
+				
+	
 				# Turn up our interface
 			        os.system("ifconfig tun%s up" % interface)
 				debug("Turning up interface tun" + str(interface))
 	
 				# Provision interface
 			        os.system("ifconfig tun%s 10.%s.254.2 netmask 255.255.255.252" % (interface, interface))
-				debug("assinging interface tun" + str(interface) + " ip of 10." + str(interface) + ".254.2")
+				debug("Assinging interface tun" + str(interface) + " ip of 10." + str(interface) + ".254.2")
 	
 	       	 		# Allow connections to our proxy servers themselves
        		 		os.system("iptables -t nat -I POSTROUTING -d %s -j RETURN" % swapped_ip)
@@ -352,13 +409,13 @@ def rotate_hosts():
        	         	       		nexthopcmd = nexthopcmd + "nexthop via 10." + str(route_interface) + ".254.1 dev tun" + str(route_interface) + " weight " + str(weight) + " "
 					route_interface = route_interface + 1
 
- 	                       	debug("DEBUG: " + nexthopcmd)
+ 	                       	debug("SHELL CMD: " + nexthopcmd)
 				os.system("%s" % nexthopcmd)       
  
 				# Add static routes for our SSH tunnels
-        			os.system("ip route add %s via %s dev %s" % (host, defaultgateway, args.interface))
-				debug("New static route")
-				debug("Successfully rotated a host")
+        			os.system("ip route add %s via %s dev %s" % (swapped_ip, defaultgateway, args.interface))
+				success("Replaced " + str(host) + " with " + str(swapped_ip) + " on tun" + str(interface))
+				log(str(swapped_ip))
 				interface = interface + 1
 				times_run = times_run + 1
 
@@ -375,11 +432,9 @@ parser.add_argument('access_key', help="Amazon's Secret Key Access.")
 parser.add_argument('-r', action='store_true', help="Enable Rotating AMI hosts.")
 parser.add_argument('-v', action='store_true', help="Enable verbose logging. All cmd's should be printed to stdout")
 parser.add_argument('num_of_instances', type=int, help="The number of amazon instances you'd like to launch.")
-parser.add_argument('-n', '--name', nargs="?", help="Set the name of the instance in the cluster")
-#parser.add_argument('--start', action='store_true', help="Starts and provisions a cluster, does not connect client")
-#parser.add_argument('--stop', action='store_true', help="Stops and deprovisions a cluster")
-#parser.add_argument('--connect', action='store_true', help="Connect to an existing cluster")
+parser.add_argument('--name', nargs="?", help="Set the name of the instance in the cluster")
 parser.add_argument('-i', '--interface', nargs='?', default='eth0', help="Interface to use, default is eth0")
+parser.add_argument('-l', '--log', action='store_true', help="Enable logging of WAN IP's traffic is routed through. Output is to /tmp/")
 args = parser.parse_args()
 
 # system variables;
@@ -388,33 +443,43 @@ FNULL = open(os.devnull, 'w')
 debug("Homedir: " + homeDir)
 
 # Generate sshkeyname
-pid = os.getpid()
-stamp = time.time()
-m = hashlib.md5()
-tempstring = str(pid + stamp)
-m.update(tempstring)
 if args.name:
+	# SSH Key Name
 	keyName = "PC_" + args.name
+	
+	# AMI Security Group Name
+	securityGroup = "PC_" + args.name
+	
+	# AMI Tag Name
+	nameTag = "PC_" + args.name
+
+	# iptables Name 
+	iptablesName = "PC_" + args.name
+
+	# log name
+	logName = "PC_"  + args.name + ".log"
+
 else:
+	pid = os.getpid()
+	stamp = time.time()
+	m = hashlib.md5()
+	tempstring = str(pid + stamp)
+	m.update(tempstring)
+	
+	# SSH key Name
 	keyName = "PC_" + m.hexdigest()
 
-# Generate securityGroupName
-if args.name:
-	securityGroup = "PC_" + args.name
-else:
+	# AMI Security Group Name
 	securityGroup = "PC_" + m.hexdigest()
 
-# Generate nameTag
-if args.name:
-	nameTag = "PC_" + args.name
-else:
+	# AMI Tag Name
 	nameTag = "PC_" + m.hexdigest()
 
-# Generate iptablesName
-if args.name:
-	iptablesName = "PC_" + args.name
-else:
+	# iptables Name
 	iptablesName = "PC_" + m.hexdigest()
+
+	# Log Name
+	logName = "PC_" + m.hexdigest() + ".log"
 
 # Get Interface IP
 def get_ip_address(ifname):
@@ -441,6 +506,9 @@ debug("Local Interface IP for " + args.interface + ": " + localIP)
 
 defaultgateway = get_default_gateway_linux()
 debug("IP address of default gateway: " + defaultgateway)
+
+debug("Opening logfile: /tmp/" + logName)
+log("Proxy Cannon Started.")
 
 # Define SigTerm Handler
 signal.signal(signal.SIGINT, cleanup)
@@ -482,11 +550,9 @@ confirm = raw_input()
 if ((confirm != "y") and (confirm != "Y")):
 	exit("Yeah you're right its probably better to play it safe.")
 
-
 #############################################################################################
-# TBD
+# System and Program Arguments
 #############################################################################################
-
 
 # Initialize connection to EC2
 success("Connecting to Amazon's EC2...")
@@ -551,73 +617,157 @@ interface = 0
 # Create ssh Tunnels for socks proxying
 success("Provisioning Hosts.....")
 for host in allInstances:
+
+	log(host)	
+
 	# Enable Tunneling on the remote host
 	sshcmd = "ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no ubuntu@%s 'echo PermitTunnel yes | sudo tee -a  /etc/ssh/sshd_config'" % (homeDir, keyName, host)
-	debug("SSH CMD: " + sshcmd)
-	retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
-	if retcode:
-		error("ERROR: Failed to modify remote sshd config.")
+	debug("SHELL CMD: " + sshcmd)
+
+	retry_cnt = 0
+	retcode = 0
+	while ((retcode == 1) or (retry_cnt < 6)):
+        	retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
+                if retcode:
+                	error("ERROR: Failed to configure remote sshd_config on  %s to allow tunneling. Retrying." % host)
+                        retry_cnt = retry_cnt + 1
+                        time.sleep(1)
+                else:
+                        retry_cnt = 6 # probably a better way to do this
+                if retry_cnt == 5:
+			error("Giving up...")
+                	cleanup("foo", "bar")
 	
 	# Permit Root Logon
         sshcmd = "ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no ubuntu@%s 'sudo sed -i \"s/PermitRootLogin without-password/PermitRootLogin yes/\" /etc/ssh/sshd_config'" % (homeDir, keyName, host)
-        debug("SSH CMD: " + sshcmd)
-        retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
-        if retcode:
-        	error("ERROR: Failed to enable remote root login for ssh.")
+        debug("SHELL CMD: " + sshcmd)
+        retry_cnt = 0
+        while ((retcode == 1) or (retry_cnt < 6)): 
+                retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
+                if retcode:
+                        error("ERROR: Failed to configure remote sshd_config on %s to allow SSH Keys as root. Retrying." % host)
+                        retry_cnt = retry_cnt + 1
+                        time.sleep(1)
+                else:
+                        retry_cnt = 6 # probably a better way to do this
+                if retry_cnt == 5:
+			error("Giving up...")
+                        cleanup("foo", "bar")
 
         # Copy Keys 
         sshcmd = "ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no ubuntu@%s 'sudo cp /home/ubuntu/.ssh/authorized_keys /root/.ssh/'" %(homeDir, keyName, host)
-        debug("SSH CMD: " + sshcmd)
-        retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
-        if retcode:
-        	error("ERROR: Failed to copy authorized keys.")
+        debug("SHELL CMD: " + sshcmd)
+        retry_cnt = 0
+        while ((retcode == 1) or (retry_cnt < 6)): 
+                retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
+                if retcode:
+                        error("ERROR: Failed to set authorized ssh keys on %s. Retrying." % host)
+                        retry_cnt = retry_cnt + 1
+                        time.sleep(1)
+                else:
+                        retry_cnt = 6 # probably a better way to do this
+                if retry_cnt == 5:
+			error("Giving up...")
+                        cleanup("foo", "bar")
 
 	# Restarting Service to take new config (you'd think a simple reload would be enough)
 	sshcmd = "ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no ubuntu@%s 'sudo service ssh restart'" % (homeDir, keyName, host)
-        debug("SSH CMD: " + sshcmd)
-	retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
-        if retcode:
-                error("ERROR: Failed to restart remote sshd service.")
-	time.sleep(2)
+	debug("SHELL CMD: " + sshcmd)
+        retry_cnt = 0
+        while ((retcode == 1) or (retry_cnt < 6)): 
+                retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
+                if retcode:
+                        error("ERROR: Failed to restart sshd service on %s. Retrying." % host)
+                        retry_cnt = retry_cnt + 1
+                        time.sleep(1)
+                else:
+                        retry_cnt = 6 # probably a better way to do this
+                if retry_cnt == 5:
+			error("Giving up...")
+                        cleanup("foo", "bar")	
+	# time.sleep(2)
 	
 	# Establish tunnel interface
 	sshcmd = "ssh -i %s/.ssh/%s.pem -w %s:%s -o StrictHostKeyChecking=no -o TCPKeepAlive=yes -o ServerAliveInterval=50 root@%s &" % (homeDir, keyName, interface, interface, host)
-        #sshcmd = "ssh -i %s/.ssh/%s.pem -w %s:%s -o StrictHostKeyChecking=no root@%s &" % (homeDir, keyName, interface, interface, host)
-	debug("SSH CMD: " + sshcmd)
-	retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
-        if retcode:
-                error("ERROR: Failed to establish ssh tunnel on %." % host)
-	time.sleep(2)	
+	debug("SHELL CMD: " + sshcmd)
+        retry_cnt = 0
+        while ((retcode == 1) or (retry_cnt < 6)): 
+                retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
+                if retcode:
+                        error("ERROR: Failed to establish ssh tuennl on %s. Retrying." % host)
+                        retry_cnt = retry_cnt + 1
+                        time.sleep(1)
+                else:
+                        retry_cnt = 6 # probably a better way to do this
+                if retry_cnt == 5:
+			error("Giving up...")
+                        cleanup("foo", "bar")	
+	# time.sleep(2)	
 
 	# Provision interface
 	sshcmd = "ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no ubuntu@%s 'sudo ifconfig tun%s 10.%s.254.1 netmask 255.255.255.252'" % (homeDir, keyName, host, interface, interface)
-        debug("SSH CMD: " + sshcmd)
-        retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
-        if retcode:
-                error("ERROR: Failed to provision remote interface on %s." % host)
-	time.sleep(2)
+        debug("SHELL CMD: " + sshcmd)
+        retry_cnt = 0
+        while ((retcode == 1) or (retry_cnt < 6)): 
+                retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
+                if retcode:
+                        error("ERROR: Failed to provision remote interface on %s. Retrying." % host)
+                        retry_cnt = retry_cnt + 1
+                        time.sleep(1)
+                else:
+                        retry_cnt = 6 # probably a better way to do this
+                if retry_cnt == 5:
+			error("Giving up...")
+                        cleanup("foo", "bar")
+	# time.sleep(2)
 	
 	# Enable forwarding on remote host
 	sshcmd = "ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no ubuntu@%s 'sudo su root -c \"echo 1 > /proc/sys/net/ipv4/ip_forward\"'" % (homeDir, keyName, host)
-        debug("SSH CMD: " + sshcmd)
-        retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
-        if retcode:
-                error("ERROR: Failed to enable remote forwarding on %s." % host)
+        debug("SHELL CMD: " + sshcmd)
+        retry_cnt = 0
+        while ((retcode == 1) or (retry_cnt < 6)): 
+                retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
+                if retcode:
+                        error("ERROR: Failed to enable forwarding on %s. Retrying." % host)
+                        retry_cnt = retry_cnt + 1
+                        time.sleep(1)
+                else:
+                        retry_cnt = 6 # probably a better way to do this
+                if retry_cnt == 5:
+			error("Giving up...")
+                        cleanup("foo", "bar")
 	
 	# Provision iptables on remote host
 	sshcmd = "ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no ubuntu@%s 'sudo iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE'" % (homeDir, keyName, host)
-        debug("SSH CMD: " + sshcmd)
-        retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
-        if retcode:
-                error("ERROR: Failed to configure remote iptable rules on %s." % host)
+        debug("SHELL CMD: " + sshcmd)
+        retry_cnt = 0
+        while ((retcode == 1) or (retry_cnt < 6)): 
+                retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
+                if retcode:
+                        error("ERROR: Failed to provision iptables on %s. Retrying." % host)
+                        retry_cnt = retry_cnt + 1
+                        time.sleep(1)
+                else:
+                        retry_cnt = 6 # probably a better way to do this
+                if retry_cnt == 5:
+			error("Giving up...")
+                        cleanup("foo", "bar")
 	
 	# Add return route back to us
-	#sshcmd = "ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no ubuntu@%s 'sudo route add %s dev tun%s'" % (homeDir, keyName, host, localIP, interface)
 	sshcmd = "ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no ubuntu@%s 'sudo route add 10.%s.254.2 dev tun%s'" % (homeDir, keyName, host, interface, interface)
-        debug("SSH CMD: " + sshcmd)
-        retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
-        if retcode:
-                error("ERROR: Failed to configure remote routing table on %s." % host)
+        debug("SHELL CMD: " + sshcmd)
+        retry_cnt = 0
+        while ((retcode == 1) or (retry_cnt < 6)): 
+                retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
+                if retcode:
+                        error("ERROR: Failed to provision static route  on %s. Retrying." % host)
+                        retry_cnt = retry_cnt + 1
+                        time.sleep(1)
+                else:
+                        retry_cnt = 6 # probably a better way to do this
+                if retry_cnt == 5:
+			error("Giving up...")
+                        cleanup("foo", "bar")
 	
 	# Turn up our interface
 	os.system("ifconfig tun%s up" % interface)
@@ -625,12 +775,12 @@ for host in allInstances:
 
 	# Provision interface
 	os.system("ifconfig tun%s 10.%s.254.2 netmask 255.255.255.252" % (interface, interface))
-	debug("assinging interface tun" + str(interface) + " ip of 10." + str(interface) + ".254.2")
+	debug("Assinging interface tun" + str(interface) + " ip of 10." + str(interface) + ".254.2")
 	interface = interface +1
 
 # setup local forwarding
 os.system("echo 1 > /proc/sys/net/ipv4/ip_forward")
-debug("set /proc/sys/net/ipv4/ip_forward to 1")
+debug("SHELL CMD: ehco 1 > /proc/sys/net/ipv4/ip_forward")
 
 # Save iptables
 success("Saving existing iptables state")
@@ -655,15 +805,15 @@ os.system("iptables -t nat -I POSTROUTING -d 10.0.0.0/8 -j RETURN")
 for host in allInstances:
 	# Allow connections to our proxy servers themselves
 	os.system("iptables -t nat -I POSTROUTING -d %s -j RETURN" % host)
-	debug("iptables cmd: iptables -t nat -I POSTROUTING -d " + host + " -j RETURN")
+	debug("SHELL CMD: iptables -t nat -I POSTROUTING -d " + host + " -j RETURN")
 	# Nat outbound traffic going through our tunnels
 	os.system("iptables -t nat -A POSTROUTING -o tun%s -j MASQUERADE " % (interface-1))
-	debug("iptables cmd: iptables -t nat -A POSTROUTING -o tun" + str(interface-1) + " -j MASQUERADE")
+	debug("SHELL CMD: iptables -t nat -A POSTROUTING -o tun" + str(interface-1) + " -j MASQUERADE")
 	# Build round robin route table command
 	nexthopcmd = nexthopcmd + "nexthop via 10." + str(interface-1) + ".254.1 dev tun" + str(interface -1) + " weight 1 "
 	# Add static routes for our SSH tunnels
 	os.system("ip route add %s via %s dev %s" % (host, defaultgateway, args.interface))
-	debug("Static Route CMD: ip route add " + host + " via " + defaultgateway + " dev " + args.interface)
+	debug("SHELL CMD: ip route add " + host + " via " + defaultgateway + " dev " + args.interface)
 	interface = interface + 1
 	count = count - 1
 
@@ -676,7 +826,7 @@ os.system("ip route add 10.0.0.0/8 via %s dev %s" % (defaultgateway, args.interf
 os.system("ip route del default")
 # Replace with our own new default route
 os.system("%s" % nexthopcmd)
-debug("New fancy route cmd: " + nexthopcmd)
+debug("SHELL CMD: " + nexthopcmd)
 
 success("Done!")
 print "\n++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
@@ -684,6 +834,7 @@ print "+ Leave this terminal open and start another to run your commands.   +"
 print "++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n"
 if args.r:
 	print "[" + bcolors.WARNING + "~" + bcolors.ENDC +"] Press " + bcolors.BOLD + "ctrl + c" + bcolors.ENDC + " to terminate the script gracefully."
+	success("Rotating IPs.")
 	rotate_hosts()
 else:
-	print "[" + bcolors.WARNING + "~" + bcolors.ENDC +"] Press " + bcolors.BOLD + "ctrl + c" + bcolors.ENDC + " to terminate the script gracefully.", raw_input()
+	print "[" + bcolors.WARNING + "~" + bcolors.ENDC +"] Press " + bcolors.BOLD + "ctrl + c" + bcolors.ENDC + " to terminate the script gracefully.", input()
