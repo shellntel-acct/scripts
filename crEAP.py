@@ -25,11 +25,18 @@ import thread
 import subprocess
 
 pcap_file = None
+wifiint = None
+wifichan = None
 
 parser = argparse.ArgumentParser(description='')
 parser.add_argument('-r', '--read', dest='pcap', required=False, help='[OPTIONAL] Read from PCAP file, else live capture is default.')
+parser.add_argument('-i', '--interface', dest='interface', required=False, help='[OPTIONAL] Wireless interface to capture.')
+parser.add_argument('-c', '--channel', dest='wifichan', required=False, help='[OPTIONAL] Wireless channel to monitor.')
+
 args = parser.parse_args()
 pcap_file = args.pcap
+wifiint = args.interface
+wifichan = args.wifichan
 
 
 class bcolors:
@@ -108,19 +115,29 @@ bssids.update({'mac':"00:00:00:00:00:00", 'net':'testing'})
 
 def live():
 	#Interface Foo
-	print "\n" + bcolors.WARNING + "[-]" + bcolors.ENDC + " Current Wireless Interfaces\n" + bcolors.ENDC 
-	print subprocess.Popen("iwconfig", shell=True, stdout=subprocess.PIPE).stdout.read()
-	subprocess.Popen("screen -X -S crEAP kill", shell=True, stdout=subprocess.PIPE).stdout.read()
+	if wifiint is None:
+		print "\n" + bcolors.WARNING + "[-]" + bcolors.ENDC + " Current Wireless Interfaces\n" + bcolors.ENDC 
+		print subprocess.Popen("iwconfig", shell=True, stdout=subprocess.PIPE).stdout.read()
+		subprocess.Popen("screen -X -S crEAP kill", shell=True, stdout=subprocess.PIPE).stdout.read()
+		try:
+			global adapter 
+			adapter = raw_input(bcolors.WARNING + "Specify wireless interface: "+ bcolors.FAIL + "      (This will enable MONITOR mode)"+ bcolors.ENDC + " (wlan0, wlan2, etc): ")
+		except:
+			print "\n" + bcolors.FAIL + "[!]" + bcolors.ENDC + " Issue specifying the wireless interface, exiting.\n" 
+			sys.exit(0)
+	else: 
+		adapter = wifiint
 
+	if wifichan is None:		
+		try:
+			global channel 
+			channel = raw_input(bcolors.WARNING + "Specify wireless channel: (1-14):"+ bcolors.FAIL + " (Defaults to channel 6): ")+ bcolors.ENDC
+		except:
+			print "\n" + bcolors.FAIL + "[!]" + bcolors.ENDC + " Unable to set channel, exiting.\n" 
+	else: 
+		channel = wifichan
 	try:
-		global adapter 
-		adapter = raw_input(bcolors.WARNING + "Specify wireless interface: "+ bcolors.FAIL + "(This will enable MONITOR mode)"+ bcolors.ENDC + " (wlan0, wlan2, etc): ")
-	except:
-		print "\n" + bcolors.FAIL + "[!]" + bcolors.ENDC + " Issue specifying the wireless interface, exiting.\n" 
-		sys.exit(0)
-
-	try:
-		print bcolors.WARNING + "\n[-]"+ bcolors.ENDC + " Enabling monitor interface and channel hopping..."
+		print bcolors.WARNING + "\n[-]"+ bcolors.ENDC + " Enabling monitor interface and channel..."
 		subprocess.Popen("airmon-ng check kill", shell=True, stdout=subprocess.PIPE).stdout.read()
 		subprocess.Popen("airmon-ng start "+adapter, shell=True, stdout=subprocess.PIPE).stdout.read()
 		adapter=adapter+"mon"
@@ -130,10 +147,10 @@ def live():
 
 	try:
 		subprocess.Popen(['screen -dmS crEAP'], shell=True, stdout=subprocess.PIPE).stdout.read()
-		cmd = "stuff $" + "'sudo airodump-ng -c1 "+adapter+"\n'"
+		cmd = "stuff $" + "'sudo airodump-ng -c"+channel+" "+adapter+"\n'"
 		subprocess.Popen(['screen -r crEAP -X ' + cmd], shell=True, stdout=subprocess.PIPE).stdout.read()
 	except:
-		print "\n" + bcolors.FAIL + "[!]" + bcolors.ENDC + " Unable to set channel hopping and promiscuous mode, exiting.\n" 
+		print "\n" + bcolors.FAIL + "[!]" + bcolors.ENDC + " Unable to set promiscuous mode, exiting.\n" 
 
 
 
@@ -240,7 +257,7 @@ if pcap_file is not None:
 else:
 	try:
 		live()
-		print bcolors.WARNING + "\n[-]"+ bcolors.ENDC + " Sniffing for EAPOL packets on interface", adapter,"...  "+ bcolors.FAIL + "Ctrl+C to exit" + bcolors.ENDC
+		print bcolors.WARNING + "\n[-]"+ bcolors.ENDC + " Sniffing for EAPOL packets on "+adapter+" channel "+channel+"...  "+ bcolors.FAIL + "Ctrl+C to exit" + bcolors.ENDC
 		conf.iface = adapter
 		sniff(iface=adapter, prn=eapol_header)
 		print "\n" + bcolors.FAIL + "\n[!]" + bcolors.ENDC + " User requested interrupt, cleaning up monitor interface and exiting...\n"
