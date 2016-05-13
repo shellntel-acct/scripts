@@ -49,7 +49,7 @@ class bcolors:
 	BOLD = '\033[1m'
 	UNDERLINE = '\033[4m'
 
-version = "1.2"
+version = "1.3"
 
 # Got root/sudo?
 euid = os.geteuid()
