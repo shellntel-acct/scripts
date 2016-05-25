@@ -1,18 +1,8 @@
 #!/usr/bin/python
-# Author: Hans Lakhan
+# Author: @jarsnah12
 #######################
 # Requirements:
 #	boto:		pip install -U boto
-#
-#######################
-# To Do
-#	1) Add support for config?
-#	2) Change os.system() to subproccess.Popen to manage STDOUT, STDERR better
-#	3) add support for re-establishing tunnels
-#	4) Add support for connecting to other clusters
-#	5) Trim Log Output Time
-#	6) Cleanup Try/Catch statments
-#	7) Clean STDOUT from iproute changes
 #
 #######################
 import boto.ec2
