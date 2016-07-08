@@ -174,7 +174,7 @@ function Invoke-SMBAutoBrute
         $validaccounts = @{}
 
         $userstotest = $null
-        "[*] Performing prereq checks.`n"
+        Write-Host "`n[*] Performing prereq checks."
         if ([String]::IsNullOrEmpty($UserList) -eq $false)
         {
             if ([System.IO.File]::Exists($UserList) -eq $false)
@@ -192,12 +192,12 @@ function Invoke-SMBAutoBrute
 
         if ($pdc -eq $null)
         {
-            "[!] Could not locate domain controller. Aborting.`n"
+            Write-Host "[!] Could not locate domain controller. Aborting."
             exit
         }
 
-        "[*] PDC: $pdc`n"
-        "[*] Passwords to test: $PasswordList`n"
+        Write-Host "[*] PDC: $pdc"
+        Write-Host "[*] Passwords to test: $PasswordList"
 
         $dcs = Get-DomainControllers
         $ContextType = [System.DirectoryServices.AccountManagement.ContextType]::Domain
@@ -209,7 +209,7 @@ function Invoke-SMBAutoBrute
             $pwds.Add($pwd.Trim(' ')) | Out-Null
         }
 
-        "[*] Initiating brute. Unless -ShowVerbose was specified, only successes will show...`n"
+        Write-Host "[*] Initiating brute. Unless -ShowVerbose was specified, only successes will show..."
         foreach ($p in $pwds)
         {
             if ($userstotest -eq $null)
@@ -232,11 +232,11 @@ function Invoke-SMBAutoBrute
 
                         if ($IsValid -eq $True)
                         {
-                            "[+] Success! Username: $userid. Password: $p`n"
+                            Write-Host "[+] Success! Username: $userid. Password: $p"
                             $validaccounts.Add($userid, $p)
                             if ($StopOnSuccess.IsPresent)
                             {
-				"[*] StopOnSuccess. Exit.`n"
+				Write-Host "[*] StopOnSuccess. Exiting.`n"
                                 exit
                             }
                         }
@@ -244,7 +244,7 @@ function Invoke-SMBAutoBrute
                         {
                             if ($ShowVerbose.IsPresent)
                             {
-                                "[-] Failed. Username: $userid. Password: $p. BadPwdCount: $($attempts + 1)`n"
+                                Write-Host "[-] Failed. Username: $userid. Password: $p. BadPwdCount: $($attempts + 1)"
                             }
                         }
 
@@ -261,12 +261,12 @@ function Invoke-SMBAutoBrute
                     {
                         if ($ShowVerbose.IsPresent)
                         {
-                            "[-] Skipped. Username: $userid. Password: $p. BadPwdCount: $attempts`n"
+                            Write-Host "[-] Skipped. Username: $userid. Password: $p. BadPwdCount: $attempts"
                         }
                     }
                 }
             }
         }
-        "[*] Completed.`n"
+        Write-Host "[*] Completed.`n"
     }
 }
