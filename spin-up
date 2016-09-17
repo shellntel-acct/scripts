@@ -1,0 +1,864 @@
+#!/usr/bin/python
+############################
+# Author: Hans Lakhan
+#
+############################
+# Requirements
+#   1) pip install ipgetter
+#   2) pip install boto
+#
+############################
+# To Do spin-up
+#   1) Read from Config
+#	a) xterm vs gterm
+#
+# To Do Empire
+#   1) Read from Config
+#   	a) Use RNG for STAGING_KEY
+#   2) Grab cert and use that for api calls
+#   3) Kill PowerShell window & Delete file
+#
+# To do MSF
+#   1) Configure Database
+#
+# To do WWW
+#   1) Config to choose type of www server (python, apache)
+#
+############################
+import boto.ec2
+import boto.route53
+from boto.route53.record import ResourceRecordSets
+import argparse
+import ConfigParser
+import os
+import datetime
+import sys
+import signal
+import time
+import hashlib
+import subprocess
+import requests
+import json
+import ipgetter
+
+#############################################################################################
+# Handle Colored Output
+#############################################################################################
+
+class bcolors:
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+def error(msg):
+        print "[" + bcolors.FAIL + "!" + bcolors.ENDC + "] " + msg
+def success(msg):
+        print "[" + bcolors.OKGREEN + "*" + bcolors.ENDC + "] " + msg
+def warning(msg):
+        print "[" + bcolors.WARNING + "~" + bcolors.ENDC + "] " + msg
+def debug(msg):
+        if args.verbose:
+                timestamp = datetime.datetime.now()
+                print "[i] " + bcolors.BOLD + str(timestamp) + bcolors.ENDC  + " : " + msg
+
+#############################################################################################
+# Handle SigTerm & Clean up
+#############################################################################################
+def cleanup(signal, frame):
+
+        # Time to clean up
+        print "\n"
+        success("Roger that! Shutting down")
+
+        # Connect to EC2 and return list of reservations
+        try:
+                success("Connecting to Amazon's EC2...")
+                cleanup_conn = boto.ec2.connect_to_region(region_name=args.region, aws_access_key_id=AWS_KEY_ID, aws_secret_access_key=AWS_ACCESS_KEY)
+        except Exception as e:
+                error("Failed to connect to Amazon EC2 because: %s" % e)
+
+        cleanup_reservations = cleanup_conn.get_all_instances(filters={"tag:Name" : nameTag, "instance-state-name" : "running"})
+
+        # Grab list of public IP's assigned to instances that were launched
+        allInstances = []
+        for reservation in cleanup_reservations:
+                for instance in reservation.instances:
+                        if instance.ip_address not in allInstances:
+                                if (instance.ip_address):
+                                        allInstances.append(instance.ip_address)
+        debug("Public IP's for all instances: " + str(allInstances))
+	ip_address = ''.join(allInstances)
+        
+	# Terminate instance
+        success("Terminating Instances")
+        for reservation in cleanup_reservations:
+                for instance in reservation.instances:
+                        instance.terminate()
+
+        warning("Pausing for 90 seconds so instances can properly terminate")
+        time.sleep(90)
+
+        # Remove Security Groups
+        success("Deleting Amazon Security Groups")
+        try:
+                cleanup_conn.delete_security_group(name=securityGroup)
+        except Exception as e:
+                error("Deletion of security group failed because %s" % e)
+
+        # Remove Key Pairs
+        success("Removing SSH keys")
+        try:
+                cleanup_conn.delete_key_pair(key_name=keyName)
+        except Exception as e:
+                error("Deletion of key pair failed because %s" % e)
+
+	if args.dns:
+		fqdn = args.dns + '.' + ZONE_NAME
+		success("Removing A record")
+ 		try:
+                	dnsconn = boto.route53.connect_to_region(region_name=args.region, aws_access_key_id=AWS_KEY_ID, aws_secret_access_key=AWS_ACCESS_KEY)
+        	except Exception as e:
+                	error("Failed to connect to Amazon EC2 because: %s" % e)
+                	exit()
+        	debug("Removing DNS Record " + fqdn + " => " + ip_address)
+		changes = ResourceRecordSets(dnsconn, ZONE_ID)
+        	change = changes.add_change("DELETE", fqdn, "A")
+        	change.add_value(ip_address)
+        	result = changes.commit()
+
+        success("Done!")
+        sys.exit(0)
+
+#############################################################################################
+# Config Section Mapping
+#############################################################################################
+
+def ConfigSectionMap(section):
+    dict1 = {}
+    options = config.options(section)
+    for option in options:
+        try:
+            dict1[option] = config.get(section, option)
+            if dict1[option] == -1:
+                DebugPrint("skip: %s" % option)
+        except:
+            print("exception on %s!" % option)
+            dict1[option] = None
+    return dict1
+
+#############################################################################################
+# System and Program Arguments
+#############################################################################################
+
+AWS_KEY_ID = ''
+AWS_ACCESS_KEY = ''
+
+ZONE_NAME = ''
+ZONE_ID = ''
+
+parser = argparse.ArgumentParser()
+parser.add_argument('-id', '--image-id', nargs='?', default='ami-d05e75b8', help="Amazon ami image ID.  Example: ami-d05e75b8. If not set, ami-d05e75b8.")
+parser.add_argument('-t', '--image-type', nargs='?', default='t2.nano', help="Amazon ami image type Example: t2.nano. If not set, defaults to t2.nano.")
+parser.add_argument('--region', nargs='?', default='us-east-1', help="Select the region: Example: us-east-1. If not set, defaults to us-east-1.")
+parser.add_argument('key_id', nargs='?', help="Amazon Access Key ID.")
+parser.add_argument('access_key', nargs='?', help="Amazon's Secret Key Access.")
+parser.add_argument('app', type=str, choices=['plain', 'empire', 'dirb', 'msf', 'www', 'ptf'], help="Select from: plain, empire, dirb, msf, www, ptf")
+parser.add_argument('-p', '--port', nargs='?', default='443', help="Select which port to listen on. Default 443")
+parser.add_argument("-v", "--verbose", action='store_true', help="Enable verbose logging. All cmd's should be printed to stdout")
+parser.add_argument('--config', type=str, help="Read from config file")
+parser.add_argument('--dns', type=str, help="Hostname to assign the host.")
+args = parser.parse_args()
+
+# Parse Config
+if (args.config):
+	debug("CONFIG FILE: " + args.config)
+	config = ConfigParser.ConfigParser()
+	# TO DO CHECK IF FILE EXISTS
+	config.read(args.config)
+	AWS_KEY_ID = ConfigSectionMap("AWS")['access_key_id']
+	AWS_ACCESS_KEY = ConfigSectionMap("AWS")['secret_access_key']
+	
+	ZONE_NAME = ConfigSectionMap("DNS")['zone_name']
+	ZONE_ID = ConfigSectionMap("DNS")['zone_id']
+else:
+	AWS_KEY_ID = args.key_id
+	AWS_ACCESS_KEY = args.access_key
+
+debug("AWS_KEY_ID: -->" + AWS_KEY_ID + "<--")
+debug("AWS_ACCESS_KEY: -->" + AWS_ACCESS_KEY + "<--")
+debug("ZONE_NAME: -->" + ZONE_NAME + "<--")
+debug("ZONE_ID: -->" + ZONE_ID + "<--")
+
+if (args.dns and not args.config):
+	error("--dns requires --config")
+	sys.exit('-1')
+
+# Check to make sure we have the minimum hardware requirements
+if args.app == 'msf' or args.app == 'ptf':
+	if args.image_type == 't2.nano' or args.image_type == 't2.micro':
+		error(args.app + " requires '-t m3.medium' or larger")
+		sys.exit(0)
+
+# Terminal
+terminal_path = "/usr/bin/gnome-terminal"
+
+# Define SigTerm Handler
+signal.signal(signal.SIGINT, cleanup)
+
+# Generate "Random" String
+pid = os.getpid()
+stamp = time.time()
+m = hashlib.md5()
+tempstring = str(pid + stamp)
+m.update(tempstring)
+
+# Define Security Group Name 
+securityGroup = "SU_" + m.hexdigest()
+
+# Define SSH Key Name
+keyName = "SU_" + m.hexdigest()
+
+# Define AMI Tag Name
+nameTag = "SU_" + m.hexdigest()
+
+# PS Payload file
+psPayload = "SU_ps_" + m.hexdigest()
+
+# system variables;
+homeDir = os.getenv("HOME")
+FNULL = open(os.devnull, 'w')
+debug("Homedir: " + homeDir)
+address_to_tunnel = {}
+
+# Grab public WAN IP
+pubip = ipgetter.myip()
+
+#############################################################################################
+# Remote SSH CMD
+#############################################################################################
+def remote_ssh(user, ip, cmd):
+	debug("Running Remote SSH Command")
+        retry_cnt = 0
+        retcode = 0
+	sshcmd = "ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no %s@%s '%s'" % (homeDir, keyName, user, ip, cmd)
+	
+	debug("SSH CMD: " + sshcmd)
+        while ((retcode == 1) or (retry_cnt < 6)):
+                retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
+                if retcode:
+                        warning("Failed to execute SSH command on %s. Retrying..." % ip)
+                        retry_cnt = retry_cnt + 1
+                        time.sleep(1)
+                else:
+                        retry_cnt = 6 # probably a better way to do this
+                if retry_cnt == 5:
+                        error("Giving up")
+                        cleanup("foo", "bar")
+
+#############################################################################################
+# Remote SCP CMD
+#############################################################################################
+def remote_scp(user, ip, src, dst):
+	debug("Running Remote SCP Command")
+	retry_cnt = 0
+        retcode = 0
+        sshcmd = "scp -i %s/.ssh/%s.pem %s %s@%s:'%s'" % (homeDir, keyName, src, user, ip, dst)
+
+        debug("SCP CMD: " + sshcmd)
+        while ((retcode == 1) or (retry_cnt < 6)):
+                retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
+                if retcode:
+                        warning("Failed to execute SCP command on %s. Retrying..." % ip)
+                        retry_cnt = retry_cnt + 1
+                        time.sleep(1)
+                else:
+                        retry_cnt = 6 # probably a better way to do this
+                if retry_cnt == 5:
+                        error("Giving up")
+                        cleanup("foo", "bar")
+
+#############################################################################################
+# Provision DNS server on Amazons route53
+#############################################################################################
+def provision_dns(ip_address, dns_name):
+
+	fqdn = dns_name + '.' + ZONE_NAME
+
+	debug("Attempting to connect to route53 service")
+	try:
+		conn = boto.route53.connect_to_region(region_name=args.region, aws_access_key_id=AWS_KEY_ID, aws_secret_access_key=AWS_ACCESS_KEY)
+        except Exception as e:
+                error("Failed to connect to Amazon EC2 because: %s" % e)
+                exit()
+	debug("Adding new record: " +  fqdn + " => " + ip_address)
+	changes = ResourceRecordSets(conn, ZONE_ID)
+	change = changes.add_change("CREATE", fqdn, "A")
+	change.add_value(ip_address)
+	result = changes.commit()
+
+#############################################################################################
+# Launch Instance
+#############################################################################################
+
+def launch_instance():
+	success("Connecting to Amazon's EC2")
+	try:
+        	conn = boto.ec2.connect_to_region(region_name=args.region, aws_access_key_id=AWS_KEY_ID, aws_secret_access_key=AWS_ACCESS_KEY)
+	except Exception as e:
+        	error("Failed to connect to Amazon EC2 because: %s" % e)
+        	exit()
+
+	# Generate KeyPair
+	success("Generating ssh keypairs")
+        keypair = conn.create_key_pair(keyName)
+        time.sleep(5)
+	keypair.save("%s/.ssh" % homeDir)
+	debug("SSH Key Pair Name " + keyName)
+	
+	success("Generating Amazon Security Group")
+	try:
+        	sg = conn.create_security_group(name=securityGroup, description="Used for spin-up")
+	except Exception as e:
+        	error("Generating Amazon Security Group failed because: %s" % e)
+        	exit()
+
+	try:
+        	sg.authorize(ip_protocol="tcp", from_port=22, to_port=22, cidr_ip=str(pubip) + "/32")
+		if args.port:
+			sg.authorize(ip_protocol="tcp", from_port=args.port, to_port=args.port, cidr_ip="0.0.0.0/0")
+		if args.app == 'empire':
+			sg.authorize(ip_protocol="tcp", from_port=1337, to_port=1337, cidr_ip=str(pubip)+ "/32")
+
+	except Exception as e:
+        	error("Generating Amazon Security Group failed because: %s" % e)
+        	exit()
+
+	debug("Security Group Name: " + securityGroup)
+
+	# Launch Amazon Instances
+	try:
+        	reservations = conn.run_instances(args.image_id, key_name=keyName, min_count='1', max_count='1', instance_type=args.image_type, security_groups=[securityGroup])
+	except Exception as e:
+        	error("Failed to start new instance: %s" % e)
+        	cleanup("null", "null")
+
+	warning("Starting instance, please give about 4 minutes for it to fully boot")
+
+	#sleep for 4 minutes while booting images
+	for i in range(21):
+	    sys.stdout.write('\r')
+	    sys.stdout.write("[%-20s] %d%%" % ('='*i, 5*i))
+	    sys.stdout.flush()
+	    time.sleep(11.5)
+	print "\n"
+
+	# Add tag name to instance for better management
+	for instance in reservations.instances:
+        	instance.add_tag("Name", nameTag)
+	debug("Tag Name: " + nameTag)
+
+	# Grab list of public IP's assigned to instances that were launched
+	reservations = conn.get_all_instances(filters={"tag:Name" : nameTag, "instance-state-name" : "running"})
+	for reservation in reservations:
+        	for instance in reservation.instances:
+                        if (instance.ip_address):
+				if args.dns:
+					success("Provisioning DNS")
+					provision_dns(instance.ip_address, args.dns)
+				return instance.ip_address
+			else:
+				error("Failed to allocate address")
+				cleanup("foo", "Bar")
+
+
+#############################################################################################
+# Launch Empire
+#############################################################################################
+def launch_empire():
+	
+	# Launch Instance
+	debug("Launching Empire Instance")
+	ip_address = launch_instance()
+
+	# Provision instance
+	success("Provisioning Instance")
+
+	# Permit Root Logon
+	success("Enabling Root Logon")
+        cmd = "sudo sed -i \"s/PermitRootLogin without-password/PermitRootLogin yes/\" /etc/ssh/sshd_config"
+	remote_ssh('ubuntu', ip_address, cmd)
+
+        # Copy Keys 
+	success("Updating SSH Keys")
+	cmd = "sudo cp /home/ubuntu/.ssh/authorized_keys /root/.ssh/"
+	remote_ssh('ubuntu', ip_address, cmd)
+
+        # Restarting Service to take new config (you'd think a simple reload would be enough)
+	success("Restarting SSH service")
+	cmd = "sudo service ssh restart"
+	remote_ssh('ubuntu', ip_address, cmd)
+
+	# Provision Empire
+	success('Installing dependencies')
+	cmd = "apt-get update; apt-get install screen git sqlite3 python-setuptools python-dev swig swig2.0 build-essential -y"
+	remote_ssh('root', ip_address, cmd)
+
+	success('Even more dependencies')
+	cmd = 'easy_install pip; pip install --upgrade virtualenv'
+	remote_ssh('root', ip_address, cmd)
+
+	success('Cloning github repo')
+	cmd = 'git clone https://github.com/PowerShellEmpire/Empire'
+	remote_ssh('root', ip_address, cmd)
+
+	success('Setting STAGING_KEY and Installing Empire')
+	cmd = 'cd Empire/setup; export STAGING_KEY="DEADBEEFDEADBEEFDEADBEEF"; ./install.sh'
+	remote_ssh('root', ip_address, cmd)
+	
+	success('Changing root profile')
+	cmd = 'echo "screen -x" >> /root/.profile'
+	remote_ssh('root', ip_address, cmd)
+
+	retcode = 0
+
+	# Start REST Server (we do this seperately since we need to background it)
+	success('Starting REST server')
+	
+	remote_ssh('root', ip_address, cmd)
+	sshcmd = "ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no root@%s 'cd /root/Empire/; ./empire --rest --password \'POTATOFACE\''&" % (homeDir, keyName, ip_address)
+        debug("SHELL CMD: " + sshcmd)
+        retry_cnt = 0
+        while ((retcode == 1) or (retry_cnt < 6)):
+                retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
+                if retcode:
+                        warning("ERROR: Failed to start REST server %s. Retrying..." % ip_address)
+                        retry_cnt = retry_cnt + 1
+                        time.sleep(1)
+                else:
+                        retry_cnt = 6 # probably a better way to do this
+                if retry_cnt == 5:
+                        error("Giving up")
+                        cleanup("foo", "bar")
+
+	time.sleep(5)
+	
+	# Get Session
+	success('Obtaining session id')
+	url = "https://%s:1337/api/admin/login" % ip_address
+	debug("URL: " + url)
+	headers = {'content-type': 'application/json'}
+	data = {'username':'empireadmin', 'password':'POTATOFACE'}
+	debug("DATA: " + str(data))
+
+
+	# import requests
+	response = requests.post(url, data=json.dumps(data), verify=False, headers=headers)
+	debug("RESPONSE CODE: " + str(response.status_code))
+	jdata = json.loads(response.content)
+
+	API_TOKEN = jdata['token']
+
+	# Start Listener
+	success('Starting Empire listener')
+	url = "https://%s:1337/api/listeners?token=%s" % (ip_address, API_TOKEN)
+	if args.dns:
+		listener_url = 'http://' + args.dns + '.' + ZONE_NAME + ':' + args.port
+	else:
+		listener_url = 'http://' + ip_address + ':' + args.port
+	data = {'Name':'https', 'Host':listener_url, 'CertPath':'./data/empire.pem'}
+	debug("DATA: " + str(data))
+
+        response = requests.post(url, data=json.dumps(data), verify=False, headers=headers)
+        debug("RESPONSE CODE: " + str(response.status_code))
+        jdata = json.loads(response.content)
+
+	# Get Powershell stager
+	success('Obtaining PowerShell stager')
+	url = "https://%s:1337/api/stagers?token=%s" % (ip_address, API_TOKEN)
+        data = {'StagerName':'launcher', 'Listener':'https'}
+        debug("DATA: " + str(data))
+
+        response = requests.post(url, data=json.dumps(data), verify=False, headers=headers)
+        debug("RESPONSE CODE: " + str(response.status_code))
+        jdata = json.loads(response.content)
+
+	# Write launcher to tmp file
+        f = open("/tmp/" + psPayload, 'w')
+        f.write(str(jdata['launcher'][u'Output']))
+        f.close()
+
+	# We now have to kill the empire --rest instance because it hijacks notifications. such a fucking hack
+	success('Killing Empire REST server, because its being dumb and doesnt play well with others')
+        sshcmd = "ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no root@%s 'killall -9 /usr/bin/python'" % (homeDir, keyName, ip_address)
+        debug("SHELL CMD: " + sshcmd)
+        retry_cnt = 0
+        while ((retcode == 1) or (retry_cnt < 6)):
+                retcode = subprocess.call(sshcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
+                if retcode:
+                        warning("ERROR: Failed to kill Empire Rest server on %s. Retrying..." % ip_address)
+                        retry_cnt = retry_cnt + 1
+                        time.sleep(1)
+                else:
+                        retry_cnt = 6 # probably a better way to do this
+                if retry_cnt == 5:
+                        error("Giving up")
+	                cleanup("foo", "bar")
+
+	# Launch Empire on remote host, but backgrounded as a screen session
+        success('Starting Remote Empire Instance')
+        cmd = 'screen -d -m bash -c "cd /root/Empire/; ./empire; exec bash"'
+        remote_ssh('root', ip_address, cmd)
+
+	success('Launching Powershell window')	
+	terminalcmd = "%s --geometry=104x28+960+540 --title='Powershell' -e 'vi /tmp/%s'" % (terminal_path, psPayload)
+        debug("Terminal CMD: " + terminalcmd)
+        subprocess.call(terminalcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
+
+	# Launch xterm window
+	success('Launching Empire console')
+	sshcmd = "/usr/bin/ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no -o TCPKeepAlive=yes -o ServerAliveInterval=50 root@%s" % (homeDir, keyName, ip_address)
+        debug("SHELL CMD: " + sshcmd)
+	terminalcmd = "%s --geometry=104x28+960+0 --title='Empire on %s' -e '%s'" % ( terminal_path, ip_address, sshcmd)
+	debug("Terminal CMD: " + terminalcmd)
+	subprocess.call(terminalcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
+	success('Done!')
+
+#############################################################################################
+# Launch Dirb
+#############################################################################################
+def launch_dirb():
+
+	# Custom wordlist
+	warning("[optional] Enter /path/wordlist to be upload. Enter for none.")
+	wordlist = raw_input("wordlist: ")
+
+	# Launch instances
+	debug('Launching dirb instance')
+	ip_address = launch_instance()
+
+        # Provision instance
+        success("Provisioning instance")
+
+	# Permit Root Logon
+        success("Enabling root logon")
+        cmd = "sudo sed -i \"s/PermitRootLogin without-password/PermitRootLogin yes/\" /etc/ssh/sshd_config"
+        remote_ssh('ubuntu', ip_address, cmd)
+
+        # Copy Keys 
+        success("Updating SSH keys")
+        cmd = "sudo cp /home/ubuntu/.ssh/authorized_keys /root/.ssh/"
+        remote_ssh('ubuntu', ip_address, cmd)
+
+        # Restarting Service to take new config (you'd think a simple reload would be enough)
+        success("Restarting SSH service")
+        cmd = "sudo service ssh restart"
+        remote_ssh('ubuntu', ip_address, cmd)
+
+        # Install Dependencies
+        success('Installing dependencies')
+        cmd = "apt-get update; apt-get install libcurl4-gnutls-dev make -y"
+        remote_ssh('root', ip_address, cmd)
+
+	# Downloading dirb and extracting bundle
+	success('Aquiring dib')
+	cmd = 'wget https://sourceforge.net/projects/dirb/files/latest/download?source=files -O dirb.tgz; tar -xzf dirb.tgz'
+	remote_ssh('root', ip_address, cmd)
+	
+	# Installing Dirb
+	success('Installing dirb')
+	cmd = 'cd dirb222; chmod +x configure; ./configure; make; make install'
+	remote_ssh('root', ip_address, cmd)
+
+	# Moving wordlist
+	success('Moving wordlist')
+	cmd = 'mv dirb222/wordlists wordlists'
+	remote_ssh('root', ip_address, cmd)
+
+	if (len(wordlist) > 0):
+		success('Uploading custom wordlist')
+		wordlist_filename = wordlist.split('/')
+		remote_scp('root', ip_address, wordlist, './wordlists/' + wordlist_filename[-1])
+	
+	# Launch xterm window
+        success('Launching dirb console')
+        sshcmd = "/usr/bin/ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no -o TCPKeepAlive=yes -o ServerAliveInterval=50 root@%s" % (homeDir, keyName, ip_address)
+        debug("SHELL CMD: " + sshcmd)
+        terminalcmd = "%s --geometry=104x28+960+0 --title='Dirb on %s' -e '%s'" % ( terminal_path, ip_address, sshcmd)
+        debug("Terminal CMD: " + terminalcmd)
+        subprocess.call(terminalcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
+        success('Done!')
+
+#############################################################################################
+# Launch Metasploit Console
+#############################################################################################
+def launch_msf():
+
+        # Custom Resource Script
+        warning("Enter /path/rc file to be upload. Enter for none.")
+        metasploitrc = raw_input("Metasploit RC: ")
+
+        # Launch instances
+        debug('Launching metasploit instance')
+        ip_address = launch_instance()
+
+       	# Provision instance
+        success("Provisioning instance")
+
+        # Permit Root Logon
+        success("Enabling root logon")
+        cmd = "sudo sed -i \"s/PermitRootLogin without-password/PermitRootLogin yes/\" /etc/ssh/sshd_config"
+        remote_ssh('ubuntu', ip_address, cmd)
+
+        # Copy Keys 
+        success("Updating SSH keys")
+        cmd = "sudo cp /home/ubuntu/.ssh/authorized_keys /root/.ssh/"
+        remote_ssh('ubuntu', ip_address, cmd)
+
+        # Restarting Service to take new config (you'd think a simple reload would be enough)
+        success("Restarting SSH service")
+        cmd = "sudo service ssh restart"
+        remote_ssh('ubuntu', ip_address, cmd)
+
+        # Installing Dependencies for MSF
+        success('Installing dependencies')
+        cmd = "apt-get update; apt-get install subversion build-essential libreadline-dev libssl-dev libpq5 libpq-dev libreadline5 libsqlite3-dev libpcap-dev openjdk-7-jre git-core autoconf postgresql pgadmin3 curl zlib1g-dev libxml2-dev libxslt1-dev vncviewer libyaml-dev curl zlib1g-dev rbenv git -y"
+        remote_ssh('root', ip_address, cmd)
+	
+	# Install Ruby
+	success('Installing ruby')
+	cmd = 'gpg --keyserver hkp://keys.gnupg.net --recv-keys 409B6B1796C275462A1703113804BB82D39DC0E3'
+	remote_ssh('root', ip_address, cmd)
+
+	cmd = 'curl -sSL https://get.rvm.io | bash -s stable --ruby'
+	remote_ssh('root', ip_address, cmd)
+
+	cmd = 'echo "source /usr/local/rvm/scripts/rvm" >> .bashrc'
+	remote_ssh('root', ip_address, cmd)
+
+	cmd = 'source /usr/local/rvm/scripts/rvm; rvm install ruby-2.3.1; rvm use 2.3.1 --default'
+	remote_ssh('root', ip_address, cmd)
+
+	# Install nmap
+	success('Installing nmap (from source)')
+	cmd = 'cd /usr/src; svn co https://svn.nmap.org/nmap; cd nmap; ./configure; make; make install; make clean'
+	remote_ssh('root', ip_address, cmd)
+	
+	# Install Metasploit
+	success('Installing Metasploit (please wait)')
+	cmd = 'source /usr/local/rvm/scripts/rvm; rvm use 2.3.1 --default; ruby -v; cd /opt; git clone https://github.com/rapid7/metasploit-framework.git; chown -R root /opt/metasploit-framework; cd metasploit-framework; gem install bundler; bundle install'
+	remote_ssh('root', ip_address, cmd)
+	
+	if (len(metasploitrc) > 0):
+                success('Uploading custom metasploit rc file')
+                metasploitrc_filename = metasploitrc.split('/')
+                remote_scp('root', ip_address, metasploitrc, './' + metasploitrc_filename[-1])
+
+	# Update login profile
+	success('Updating profile')
+	if (len(metasploitrc) > 0):
+		cmd = 'echo "cd /opt/metasploit-framework; ./msfconsole -r /root/%s" >> .bashrc' % metasploitrc_filename[-1]
+	else:	
+		cmd = 'echo "cd /opt/metasploit-framework; ./msfconsole" >> .bashrc'
+	remote_ssh('root', ip_address, cmd)
+	
+        # Launch xterm window
+        success('Launching msf console')
+        sshcmd = "/usr/bin/ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no -o TCPKeepAlive=yes -o ServerAliveInterval=50 root@%s" % (homeDir, keyName, ip_address)
+        debug("SHELL CMD: " + sshcmd)
+        terminalcmd = "%s --geometry=104x56+960+0 --title='MSF on %s' -e '%s'" % ( terminal_path, ip_address, sshcmd)
+        debug("Terminal CMD: " + terminalcmd)
+        subprocess.call(terminalcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
+        success('Done!')
+
+#############################################################################################
+# Launch Plain Console
+#############################################################################################
+def launch_plain():
+
+        # Launch instances
+        debug('Launching plain instance')
+        ip_address = launch_instance()
+
+        # Launch xterm window
+        success('Launching console console')
+        sshcmd = "/usr/bin/ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no -o TCPKeepAlive=yes -o ServerAliveInterval=50 ubuntu@%s" % (homeDir, keyName, ip_address)
+        debug("SHELL CMD: " + sshcmd)
+        terminalcmd = "%s --geometry=104x56+960+0 --title='SSH on %s' -e '%s'" % ( terminal_path, ip_address, sshcmd)
+        debug("Terminal CMD: " + terminalcmd)
+        subprocess.call(terminalcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
+        success('Done!')
+
+#############################################################################################
+# Launch WWW Console
+#############################################################################################
+def launch_www():
+
+        # Custom Resource Script
+        warning("Enter /path/payload.exe file to be upload/hosted. Enter for none.")
+        payload = raw_input("Payload: ")
+
+        # Launch instances
+        debug('Launching www instance')
+        ip_address = launch_instance()
+
+        # Provision instance
+        success("Provisioning Instance")
+
+        # Permit Root Logon
+        success("Enabling Root Logon")
+        cmd = "sudo sed -i \"s/PermitRootLogin without-password/PermitRootLogin yes/\" /etc/ssh/sshd_config"
+        remote_ssh('ubuntu', ip_address, cmd)
+
+        # Copy Keys 
+        success("Updating SSH Keys")
+        cmd = "sudo cp /home/ubuntu/.ssh/authorized_keys /root/.ssh/"
+        remote_ssh('ubuntu', ip_address, cmd)
+
+        # Restarting Service to take new config (you'd think a simple reload would be enough)
+        success("Restarting SSH service")
+        cmd = "sudo service ssh restart"
+        remote_ssh('ubuntu', ip_address, cmd)
+
+        # Install Dependencies
+        success('Installing dependencies')
+        cmd = "apt-get update; apt-get install screen -y"
+        remote_ssh('root', ip_address, cmd)
+
+	# create hosting dir
+	success('Setting up www root')
+	cmd = "mkdir /var/www; chown ubuntu /var/www;"
+	remote_ssh('root', ip_address, cmd)
+
+        if (len(payload) > 0):
+                success('Uploading payload for hosting')
+                payload_filename = payload.split('/')
+                remote_scp('root', ip_address, payload, '/var/www/' + payload_filename[-1])
+
+        # Launch python simpler server on remote host, but backgrounded as a screen session
+        success('Starting python SimpleHTTPServer Instance')
+        cmd = 'screen -d -m bash -c "cd /var/www/; sudo python -m SimpleHTTPServer ' + args.port + '; exec bash"'
+        remote_ssh('ubuntu', ip_address, cmd)
+
+	# Update ubuntu profile
+       	success('Changing ubuntu profile')
+        cmd = 'echo "screen -x" >> .profile'
+        remote_ssh('ubuntu', ip_address, cmd)
+
+        # Launch xterm window
+        success('Launching console console')
+        sshcmd = "/usr/bin/ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no -o TCPKeepAlive=yes -o ServerAliveInterval=50 ubuntu@%s" % (homeDir, keyName, ip_address)
+        debug("SHELL CMD: " + sshcmd)
+        terminalcmd = "%s --geometry=104x56+960+0 --title='www on %s' -e '%s'" % ( terminal_path, ip_address, sshcmd)
+        debug("Terminal CMD: " + terminalcmd)
+        subprocess.call(terminalcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
+        success('Done!')
+
+	if (len(payload) > 0):
+		success("File hosted at: http://" + args.dns + "." + ZONE_NAME + ":" + args.port + "/" + payload_filename[-1])
+	else:
+		success("Webserver started at: http://" + args.dns + "." + ZONE_NAME + ":" + args.port + "/")
+
+#############################################################################################
+# Launch Pentetration Testers Framework (PTF)
+#############################################################################################
+def launch_ptf():
+
+        # Launch instances
+        debug('Launching Penetration Testers Framework (PTF) instance')
+        ip_address = launch_instance()
+
+        # Provision instance
+        success("Provisioning instance")
+
+        # Permit Root Logon
+        success("Enabling root logon")
+        cmd = "sudo sed -i \"s/PermitRootLogin without-password/PermitRootLogin yes/\" /etc/ssh/sshd_config"
+        remote_ssh('ubuntu', ip_address, cmd)
+
+        # Copy Keys 
+        success("Updating SSH keys")
+        cmd = "sudo cp /home/ubuntu/.ssh/authorized_keys /root/.ssh/"
+        remote_ssh('ubuntu', ip_address, cmd)
+
+        # Restarting Service to take new config (you'd think a simple reload would be enough)
+        success("Restarting SSH service")
+        cmd = "sudo service ssh restart"
+        remote_ssh('ubuntu', ip_address, cmd)
+
+        # Installing Dependencies for PTF
+        success('Installing dependencies')
+        cmd = "apt-get update; apt-get install subversion python-setuptools python-dev screen git git-core curl zlib1g-dev build-essential libssl-dev libreadline-dev libyaml-dev libsqlite3-dev sqlite3 libxml2-dev libxslt1-dev libcurl4-openssl-dev python-software-properties libffi-dev -y"
+        remote_ssh('root', ip_address, cmd)
+
+        success('Even more dependencies')
+        cmd = 'easy_install pip; pip install --upgrade virtualenv'
+        remote_ssh('root', ip_address, cmd)
+
+        # Install Ruby
+        success('Installing ruby')
+        cmd = 'gpg --keyserver hkp://keys.gnupg.net --recv-keys 409B6B1796C275462A1703113804BB82D39DC0E3'
+        remote_ssh('root', ip_address, cmd)
+
+        cmd = 'curl -sSL https://get.rvm.io | bash -s stable --ruby'
+        remote_ssh('root', ip_address, cmd)
+
+        cmd = 'echo "source /usr/local/rvm/scripts/rvm" >> .bashrc'
+        remote_ssh('root', ip_address, cmd)
+
+        cmd = 'source /usr/local/rvm/scripts/rvm; rvm install ruby-2.3.1; rvm use 2.3.1 --default'
+        remote_ssh('root', ip_address, cmd)
+
+        # Install ptf
+        success('Installing PTF')
+        cmd = 'git clone https://github.com/trustedsec/ptf'
+        remote_ssh('root', ip_address, cmd)
+
+	# Launch PTF on remote host, but backgrounded as a screen session
+      	success('Starting python SimpleHTTPServer Instance')
+        cmd = 'screen -d -m bash -c "cd ptf; ./ptf; exec bash"'
+        remote_ssh('root', ip_address, cmd)
+
+        # Update ubuntu profile
+        success('Changing ubuntu profile')
+        cmd = 'echo "screen -x" >> .profile'
+        remote_ssh('root', ip_address, cmd)
+
+        # Launch xterm window
+        success('Launching console console')
+        sshcmd = "/usr/bin/ssh -i %s/.ssh/%s.pem -o StrictHostKeyChecking=no -o TCPKeepAlive=yes -o ServerAliveInterval=50 root@%s" % (homeDir, keyName, ip_address)
+        debug("SHELL CMD: " + sshcmd)
+        terminalcmd = "%s --geometry=104x56+960+0 --title='ptf on %s' -e '%s'" % ( terminal_path, ip_address, sshcmd)
+        debug("Terminal CMD: " + terminalcmd)
+        subprocess.call(terminalcmd, shell=True, stdout=FNULL, stderr=subprocess.STDOUT)
+        success('Done!')
+
+#############################################################################################
+# Main
+#############################################################################################
+
+if args.app == "empire":
+	launch_empire()
+elif args.app == "dirb":
+	launch_dirb()
+elif args.app == "msf":
+	launch_msf()
+elif args.app == "plain":
+	launch_plain()
+elif args.app == "www":
+	launch_www()
+elif args.app == "ptf":
+	launch_ptf()
+else:
+	sys.exit(-1)
+
+print "\n+++++++++++++++++++++++++++++"
+print "+ Leave this terminal open! +"
+print "+++++++++++++++++++++++++++++\n"
+print "[" + bcolors.WARNING + "~" + bcolors.ENDC +"] Press " + bcolors.BOLD + "ctrl + c" + bcolors.ENDC + " to terminate the script gracefully."
+while 1:
+        null = raw_input()
