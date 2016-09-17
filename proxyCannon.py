@@ -1,8 +1,18 @@
 #!/usr/bin/python
-# Author: @jarsnah12
+# Author: Hans Lakhan
 #######################
 # Requirements:
 #	boto:		pip install -U boto
+#
+#######################
+# To Do
+#	1) Add support for config?
+#	2) Change os.system() to subproccess.Popen to manage STDOUT, STDERR better
+#	3) add support for re-establishing tunnels
+#	4) Add support for connecting to other clusters
+#	5) Trim Log Output Time
+#	6) Cleanup Try/Catch statments
+#	7) Clean STDOUT from iproute changes
 #
 #######################
 import boto.ec2
@@ -17,6 +27,7 @@ import socket
 import hashlib
 import signal
 import datetime
+import re
 from subprocess import Popen, PIPE, STDOUT
 
 #############################################################################################
@@ -69,7 +80,8 @@ def cleanup(signal, frame):
         # Connect to EC2 and return list of reservations
         try:
                 success("Connecting to Amazon's EC2...")
-                cleanup_conn = boto.ec2.connect_to_region(region_name=args.region, aws_access_key_id=args.key_id, aws_secret_access_key=args.access_key)
+                #cleanup_conn = boto.ec2.connect_to_region(region_name=args.region, aws_access_key_id=args.key_id, aws_secret_access_key=args.access_key)
+		cleanup_conn = boto.ec2.connect_to_region(region_name=args.region, aws_access_key_id=aws_access_key_id, aws_secret_access_key=aws_secret_access_key)
         except Exception as e:
                 error("Failed to connect to Amazon EC2 because: %s" % e)
 
@@ -162,7 +174,7 @@ def rotate_hosts():
                                 cleanup("foo", "bar")
                         try:
                                 debug("Connecting to Amazon's EC2.")
-	                        rotate_conn = boto.ec2.connect_to_region(region_name=args.region, aws_access_key_id=args.key_id, aws_secret_access_key=args.access_key)
+	                        rotate_conn = boto.ec2.connect_to_region(region_name=args.region, aws_access_key_id=aws_access_key_id, aws_secret_access_key=aws_secret_access_key)
 				retry_cnt = 6
                         except Exception as e:
                                 warning("Failed to connect to Amazon EC2 because: %s. Retrying..." % e)
@@ -195,7 +207,7 @@ def rotate_hosts():
 						error("giving up...")
 						cleanup("foo", "bar")
                                 	try:
-						ipfilter_conn = boto.ec2.connect_to_region(region_name=args.region, aws_access_key_id=args.key_id, aws_secret_access_key=args.access_key)
+						ipfilter_conn = boto.ec2.connect_to_region(region_name=args.region, aws_access_key_id=aws_access_key_id, aws_secret_access_key=aws_secret_access_key)
 						retry_cnt = 6
 					except Exception as e:
 						warning("Failed to connect to Amazon EC2 because: %s (ipfilter_con). Retrying..." % e)
@@ -351,7 +363,7 @@ def rotate_hosts():
 
 				# Connect to EC2 and return list of reservations
                                 try:
-                                        ip_list_conn = boto.ec2.connect_to_region(region_name=args.region, aws_access_key_id=args.key_id, aws_secret_access_key=args.access_key)
+                                        ip_list_conn = boto.ec2.connect_to_region(region_name=args.region, aws_access_key_id=aws_access_key_id, aws_secret_access_key=aws_secret_access_key)
                                 except Exception as e:
                                         error("Failed to connect to Amazon EC2 because: %s" % e)
 
@@ -404,6 +416,7 @@ def rotate_hosts():
 					else:
 						retry_cnt = 6 # probably a better way to do this
 					if retry_cnt == 5:
+						raw_input("Pausing to investigate")
 						error("Giving up...")
 						cleanup("foo", "bar")
 
@@ -474,8 +487,6 @@ parser = argparse.ArgumentParser()
 parser.add_argument('-id', '--image-id', nargs='?', default='ami-d05e75b8', help="Amazon ami image ID.  Example: ami-d05e75b8. If not set, ami-d05e75b8.")
 parser.add_argument('-t', '--image-type', nargs='?', default='t2.nano', help="Amazon ami image type Example: t2.nano. If not set, defaults to t2.nano.")
 parser.add_argument('--region', nargs='?', default='us-east-1', help="Select the region: Example: us-east-1. If not set, defaults to us-east-1.")
-parser.add_argument('key_id', help="Amazon Access Key ID.")
-parser.add_argument('access_key', help="Amazon's Secret Key Access.")
 parser.add_argument('-r', action='store_true', help="Enable Rotating AMI hosts.")
 parser.add_argument('-v', action='store_true', help="Enable verbose logging. All cmd's should be printed to stdout")
 parser.add_argument('num_of_instances', type=int, help="The number of amazon instances you'd like to launch.")
@@ -490,8 +501,38 @@ FNULL = open(os.devnull, 'w')
 debug("Homedir: " + homeDir)
 address_to_tunnel = {}
 
+# Check for boto config
+boto_config = homeDir + "/.boto"
+if os.path.isfile(boto_config):
+	for line in open(boto_config):
+		pattern = re.findall("^aws_access_key_id = (.*)\n", line, re.DOTALL)
+		if pattern:
+			aws_access_key_id = pattern[0]	
+		pattern = re.findall("^aws_secret_access_key = (.*)\n", line, re.DOTALL)
+		if pattern:
+			aws_secret_access_key = pattern[0]
+else:
+	debug("boto config file does not exist")
+	aws_access_key_id = raw_input("What is the AWS Access Key Id: ")
+	aws_secret_access_key = raw_input("What is the AWS Secret Access Key: ")
+
+	boto_fh = open(boto_config, 'w+')
+	boto_fh.write('[default]')
+	boto_fh.write("\n")
+	boto_fh.write('aws_access_key_id = ')
+	boto_fh.write(aws_access_key_id)
+	boto_fh.write("\n")
+	boto_fh.write('aws_secret_access_key = ')
+	boto_fh.write(aws_secret_access_key)
+	boto_fh.write("\n")
+	boto_fh.close
+
+debug("AWS_ACCESS_KEY_ID: " + aws_access_key_id)
+debug("AWS_SECRET_ACCESS_KEY: " + aws_secret_access_key)
+
 # Generate sshkeyname
 if args.name:
+
 	# SSH Key Name
 	keyName = "PC_" + args.name
 	
@@ -583,7 +624,7 @@ if not os.path.isfile("/sbin/iptables"):
 	exit()
 
 # Check args
-if args.num_of_instances < 2:
+if args.num_of_instances < 1:
 	error("You need at least 1 instance")
 	exit();
 elif args.num_of_instances > 20:
@@ -605,7 +646,8 @@ if confirm.lower() != "y":
 # Initialize connection to EC2
 success("Connecting to Amazon's EC2...")
 try:
-	conn = boto.ec2.connect_to_region(region_name=args.region, aws_access_key_id=args.key_id, aws_secret_access_key=args.access_key)
+	conn = boto.ec2.connect_to_region(region_name=args.region, aws_access_key_id=aws_access_key_id, aws_secret_access_key=aws_secret_access_key)
+	#conn =  boto.ec2.connect_to_region(region_name=args.region)
 except Exception as e:
 	error("Failed to connect to Amazon EC2 because: %s" % e)
 	exit()
@@ -615,7 +657,7 @@ success("Generating ssh keypairs...")
 keypair = conn.create_key_pair(keyName)
 keypair.save("%s/.ssh" % homeDir)
 debug("SSH Key Pair Name " + keyName)
-
+time.sleep(5)
 success("Generating Amazon Security Group...")
 try:
 	sg = conn.create_security_group(name=securityGroup, description="Used for proxyCannon")
@@ -623,6 +665,7 @@ except Exception as e:
 	error("Generating Amazon Security Group failed because: %s" % e)
 	exit()
 
+time.sleep(5)
 try:
 	sg.authorize(ip_protocol="tcp", from_port=22, to_port=22, cidr_ip="0.0.0.0/0")
 except Exception as e:
@@ -885,4 +928,6 @@ if args.r:
 	success("Rotating IPs.")
 	rotate_hosts()
 else:
-	print "[" + bcolors.WARNING + "~" + bcolors.ENDC +"] Press " + bcolors.BOLD + "ctrl + c" + bcolors.ENDC + " to terminate the script gracefully.", input()
+	print "[" + bcolors.WARNING + "~" + bcolors.ENDC +"] Press " + bcolors.BOLD + "ctrl + c" + bcolors.ENDC + " to terminate the script gracefully."
+while 1:
+	null = raw_input()
