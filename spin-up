@@ -6,6 +6,7 @@
 # Requirements
 #   1) pip install ipgetter
 #   2) pip install boto
+#   3) pip install requests
 #
 ############################
 # To Do spin-up
