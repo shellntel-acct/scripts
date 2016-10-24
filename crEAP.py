@@ -72,7 +72,7 @@ for r in requirement:
 			sys.exit(0)
 banner = bcolors.OKGREEN + """
                           ___________   _____ ___________
-                 __________\_   _____/  /  _  \______    \
+                 __________\_   _____/  /  _  \______    \ 
                _/ ___\_  __ \	__)_   /  /_\  \|     ___/
                \  \___|  | \/       \ /  |   \  \    |
                 \___  >__| /_______  /\____|__  /____|
@@ -233,13 +233,13 @@ else:
 		print bcolors.WARNING + "\n[-]"+ bcolors.ENDC + " Sniffing for EAPOL packets on "+adapter+" channel "+channel+"...  "+ bcolors.FAIL + "Ctrl+C to exit" + bcolors.ENDC
 		conf.iface = adapter
 		sniff(iface=adapter, prn=eapol_header)
-		print "\n" + bcolors.FAIL + "\n[!]" + bcolors.ENDC + " User requested interrupt, cleaning up monitor interface and exiting...\n"
-		print bcolors.WARNING + "[-]"+ bcolors.ENDC + " Cleaning up interfaces...\n"
+		print "\n" + bcolors.FAIL + "\n[!]" + bcolors.ENDC + " User requested interrupt, cleaning up monitor interface and exiting..."
+		print bcolors.WARNING + "[-]"+ bcolors.ENDC + " Cleaning up interfaces..."
 		subprocess.Popen("screen -X -S crEAP kill", shell=True, stdout=subprocess.PIPE).stdout.read()
 		subprocess.Popen("sudo airmon-ng stop "+adapter, shell=True, stdout=subprocess.PIPE).stdout.read()
 	except:
 		"\n" + bcolors.FAIL + "\n[!]" + bcolors.ENDC + " Issue sniffing packets, ensure python's scapy-com in installed (https://bitbucket.org/secdev/scapy-com).\n"
 		sys.exit(0)
-print bcolors.OKGREEN + "\n[-]"+ bcolors.ENDC + " Unique Harvested Users:"
+print bcolors.OKGREEN + "[-]"+ bcolors.ENDC + " Unique Harvested Users:"
 print checked
 print "\n"
