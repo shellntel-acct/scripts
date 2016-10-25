@@ -110,7 +110,7 @@ def live():
 	if wifichan is None:
 		try:
 			global channel
-			channel = raw_input(bcolors.WARNING + "Specify wireless channel:"+ bcolors.FAIL + " (Default Channel 6. Supports 2.4/5ghz spectrum): ")+ bcolors.ENDC
+			channel = input(bcolors.WARNING + "Specify wireless channel:"+ bcolors.FAIL + " (Default Channel 6. Supports 2.4/5ghz spectrum): ")+ bcolors.ENDC
 		except:
 			print "\n" + bcolors.FAIL + "[!]" + bcolors.ENDC + " Unable to set channel, exiting.\n"
 	else:
