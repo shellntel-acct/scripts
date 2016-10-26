@@ -110,9 +110,14 @@ def live():
 	if wifichan is None:
 		try:
 			global channel
-			channel = raw_input(bcolors.WARNING + "Specify wireless channel:"+ bcolors.FAIL + " (Default Channel 6. Supports 2.4/5ghz spectrum): ")+ bcolors.ENDC
+<<<<<<< HEAD
+			channel = raw_input(bcolors.WARNING + "Specify wireless channel:"+ bcolors.FAIL + " (Default Channel 6. Supports 2.4/5ghz spectrum): " + bcolors.ENDC)
+=======
+			channel = input(bcolors.WARNING + "Specify wireless channel:"+ bcolors.FAIL + " (Default Channel 6. Supports 2.4/5ghz spectrum): ")+ bcolors.ENDC
+>>>>>>> 55c5ce65ed149b06e7c86165bc8d8a26f8834a95
 		except:
 			print "\n" + bcolors.FAIL + "[!]" + bcolors.ENDC + " Unable to set channel, exiting.\n"
+			sys.exit(0)
 	else:
 		channel = wifichan
 	try:
@@ -123,7 +128,7 @@ def live():
 	except:
 		print "\n" + bcolors.FAIL + "[!]" + bcolors.ENDC + " Unable to enable MONITOR mode, exiting.\n"
 	
-	if channel <= 14:
+	if int(channel) <= 14:
 		try:
 			subprocess.Popen(['screen -dmS crEAP'], shell=True, stdout=subprocess.PIPE).stdout.read()
 			cmd = "stuff $" + "'sudo airodump-ng -c"+channel+" "+adapter+"\n'"
