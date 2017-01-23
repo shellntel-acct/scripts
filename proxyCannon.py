@@ -77,6 +77,10 @@ def cleanup(signal, frame):
 	print "\n"
 	success("Roger that! Shutting down...")
 
+	if args.v:
+		print 'In debug mode. Press enter to continue.'
+                null = raw_input()
+
         # Connect to EC2 and return list of reservations
         try:
                 success("Connecting to Amazon's EC2...")
@@ -444,6 +448,13 @@ def rotate_hosts():
 				# Provision interface
 			        os.system("ifconfig tun%s 10.%s.254.2 netmask 255.255.255.252" % (address_to_tunnel[str(host)], address_to_tunnel[str(host)]))
 				debug("Assinging interface tun" + address_to_tunnel[str(host)] + " ip of 10." + address_to_tunnel[str(host)] + ".254.2")
+				time.sleep(2)
+
+			        # Adding local route (shoudlnt be needed)
+			        debug("Adding static route 10." + address_to_tunnel[str(host)] + ".254.0/30 via dev tun" + address_to_tunnel[str(host)])
+				route_cmd = 'ip route add 10.' + address_to_tunnel[str(host)] + '.254.0/30 via 0.0.0.0 dev tun' + address_to_tunnel[str(host)] + ' proto kernel scope link src 10.' + address_to_tunnel[str(host)] + '.254.2'
+                                debug('SHELL CMD: ' + route_cmd)
+                                os.system(route_cmd)
 	
 	       	 		# Allow connections to our proxy servers themselves
        		 		os.system("iptables -t nat -I POSTROUTING -d %s -j RETURN" % swapped_ip)
@@ -864,6 +875,14 @@ for host in allInstances:
 	# Provision interface
 	os.system("ifconfig tun%s 10.%s.254.2 netmask 255.255.255.252" % (interface, interface))
 	debug("Assinging interface tun" + str(interface) + " ip of 10." + str(interface) + ".254.2")
+        time.sleep(2)
+
+        # Adding local route (shoudlnt be needed)
+        debug("Adding static route 10." + str(interface) + ".254.0/30 via dev tun" + str(interface))
+        route_cmd = 'ip route add 10.' + str(interface) + '.254.0/30 via 0.0.0.0 dev tun' + str(interface) + ' proto kernel scope link src 10.' + str(interface) + '.254.2'
+        debug('SHELL CMD: ' + route_cmd)
+        os.system(route_cmd)
+
 	interface = interface +1
 
 	# add entry to table
@@ -913,8 +932,6 @@ os.system("ip route add 192.168.0.0/16 via %s dev %s > /dev/null 2>&1" % (defaul
 os.system("ip route add 172.16.0.0/16 via %s dev %s > /dev/null 2>&1" % (defaultgateway, args.interface))
 os.system("ip route add 10.0.0.0/8 via %s dev %s > /dev/null 2>&1" % (defaultgateway, args.interface))
 
-# Remove existing default route
-os.system("ip route del default")
 # Replace with our own new default route
 os.system("%s" % nexthopcmd)
 debug("SHELL CMD: " + nexthopcmd)
